@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Склейка</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; img-src * file: data: blob:; media-src * file: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <!-- Top bar -->
+  <header id="topbar">
+    <div class="brand"><span class="logo">◧</span> Склейка</div>
+    <div class="menu">
+      <button data-cmd="new" title="Новый проект (Ctrl+N)">Новый</button>
+      <button data-cmd="open" title="Открыть проект (Ctrl+O)">Открыть</button>
+      <button data-cmd="save" title="Сохранить проект (Ctrl+S)">Сохранить</button>
+      <span class="sep"></span>
+      <button data-cmd="undo" title="Отменить (Ctrl+Z)">↶</button>
+      <button data-cmd="redo" title="Повторить (Ctrl+Y)">↷</button>
+    </div>
+    <div id="projName" contenteditable="true" spellcheck="false" data-no-i18n>Без названия</div>
+    <div class="right">
+      <span id="saveState"></span>
+      <button data-cmd="ai" title="ИИ-помощник (Ctrl+K)">✨ Помощник</button>
+      <button data-cmd="versions" title="Версии проекта">🕘</button>
+      <button data-cmd="settings" title="Настройки (Ctrl+,)">⚙</button>
+      <button data-cmd="help" title="Руководство (F1)">?</button>
+      <button id="exportBtn" data-cmd="export" class="primary">⇪ Экспорт</button>
+    </div>
+  </header>
+
+  <main id="workspace">
+    <!-- Left: asset panels -->
+    <section id="left">
+      <nav id="rail">
+        <button data-tab="media" class="active"><i>▣</i><span>Медиа</span></button>
+        <button data-tab="audio"><i>♪</i><span>Аудио</span></button>
+        <button data-tab="text"><i>T</i><span>Текст</span></button>
+        <button data-tab="footage"><i>🎞</i><span>Футажи</span></button>
+        <button data-tab="stickers"><i>☺</i><span>Стикеры</span></button>
+        <button data-tab="effects"><i>✦</i><span>Эффекты</span></button>
+        <button data-tab="transitions"><i>⇄</i><span>Переходы</span></button>
+        <button data-tab="filters"><i>◐</i><span>Фильтры</span></button>
+        <button data-tab="adjust"><i>☼</i><span>Коррекция</span></button>
+        <button data-tab="cuts"><i>✂</i><span>Нарезка</span></button>
+        <button data-tab="captions"><i>≣</i><span>Субтитры</span></button>
+        <button data-tab="online"><i>🌐</i><span>Онлайн</span></button>
+        <button data-tab="ai" class="aiTab"><i>✨</i><span>ИИ</span></button>
+      </nav>
+      <div id="panel"></div>
+    </section>
+
+    <div class="resizer v" data-resize="left"></div>
+
+    <!-- Center: preview -->
+    <section id="center">
+      <div id="playerHead">
+        <span>Плеер</span>
+        <div class="grow"></div>
+        <select id="ratioSel" title="Соотношение сторон"></select>
+      </div>
+      <div id="stageWrap">
+        <div id="stage">
+          <canvas id="preview"></canvas>
+          <div id="overlay"></div>
+        </div>
+      </div>
+      <div id="transport">
+        <span id="tcur" class="tc">00:00:00</span><span class="tc dim"> / </span><span id="tdur" class="tc dim">00:00:00</span>
+        <div class="grow"></div>
+        <button data-cmd="prevFrame" title="Кадр назад (←)">⏮</button>
+        <button data-cmd="play" id="playBtn" title="Воспроизвести (Пробел)">▶</button>
+        <button data-cmd="nextFrame" title="Кадр вперёд (→)">⏭</button>
+        <div class="grow"></div>
+        <select id="previewQ" title="Качество превью">
+          <option value="0.5">Превью: ½</option>
+          <option value="0.75" selected>Превью: ¾</option>
+          <option value="1">Превью: полное</option>
+        </select>
+        <button data-cmd="snapshot" title="Сохранить кадр PNG">📷</button>
+        <button data-cmd="fullscreen" title="Полный экран (F)">⛶</button>
+      </div>
+    </section>
+
+    <div class="resizer v" data-resize="right"></div>
+
+    <!-- Right: inspector -->
+    <section id="right">
+      <div id="inspTabs"></div>
+      <div id="inspector"></div>
+    </section>
+  </main>
+
+  <div class="resizer h" data-resize="timeline"></div>
+
+  <!-- Timeline -->
+  <section id="timelineArea">
+    <div id="tlToolbar">
+      <button data-cmd="split" title="Разделить (Ctrl+B / S)">✂ Разделить</button>
+      <button data-cmd="splitLeft" title="Удалить слева от головки (Q)">⇤</button>
+      <button data-cmd="splitRight" title="Удалить справа от головки (W)">⇥</button>
+      <button data-cmd="delete" title="Удалить (Del)">🗑</button>
+      <button data-cmd="duplicate" title="Дублировать (Ctrl+D)">⧉</button>
+      <button data-cmd="freeze" title="Стоп-кадр">❄</button>
+      <button data-cmd="reverse" title="Реверс">⇆</button>
+      <button data-cmd="detachAudio" title="Отделить аудио">♫↓</button>
+      <button data-cmd="sync" title="Синхронизировать текст с футажом (выделите оба)">⇄ Синхр.</button>
+      <button data-cmd="silence" title="Вырезать паузы и тишину на главной дорожке">✂ Паузы</button>
+      <button data-cmd="rotate90" title="Повернуть на 90°">⟳</button>
+      <button data-cmd="record" id="recBtn" title="Записать голос">🎙</button>
+      <button data-cmd="marker" title="Маркер (M)">⚑</button>
+      <div class="grow"></div>
+      <label class="tog" title="Магнит главной дорожки"><input type="checkbox" id="magnet" checked><span>Магнит</span></label>
+      <label class="tog" title="Привязка"><input type="checkbox" id="snap" checked><span>Привязка</span></label>
+      <label class="tog" title="Предпрослушивание при перемотке"><input type="checkbox" id="scrubAudio"><span>Звук при перемотке</span></label>
+      <button data-cmd="zoomOut" title="Отдалить (-)">−</button>
+      <input type="range" id="zoom" min="0" max="100" value="40">
+      <button data-cmd="zoomIn" title="Приблизить (+)">+</button>
+      <button data-cmd="zoomFit" title="Вместить (Shift+Z)">⤢</button>
+    </div>
+    <div id="timeline">
+      <div id="tlHeaders"><div class="rulerPad"></div><div id="tlHeadList"></div></div>
+      <div id="tlScroll">
+        <div id="tlInner">
+          <canvas id="ruler"></canvas>
+          <div id="tlTracks"></div>
+          <div id="playhead"><div class="grab"></div><div class="knob"></div></div>
+          <div id="snapLine"></div>
+          <div id="marquee"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div id="ctxMenu" class="hidden"></div>
+<div id="modal" class="hidden"><div class="box"></div></div>
+<div id="toast"></div>
+<div id="dropHint" class="hidden">Отпустите, чтобы импортировать</div>
+
+<script src="js/util.js"></script>
+<script src="js/data.js"></script>
+<script src="js/i18n.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/timeline.js"></script>
+<script src="js/panels.js"></script>
+<script src="js/inspector.js"></script>
+<script src="js/export.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/extras.js"></script>
+<script src="js/cuts.js"></script>
+<script src="js/footage.js"></script>
+<script src="js/online.js"></script>
+<script src="js/settings.js"></script>
+<script src="js/projects.js"></script>
+<script src="js/guide.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
