@@ -11,7 +11,7 @@ function audioItems() {
     if (!m || !m.hasAudio || c.muted || c.freeze != null || (tr && tr.muted) || c.volume <= 0) continue;
     const srcOut = Math.min(m.duration || 1e9, c.in + c.dur * c.speed);
     if (srcOut - c.in < 0.01) continue;
-    items.push({ path: m.path, srcIn: c.in, srcOut, speed: c.speed, volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, start: c.start, trackId: c.trackId });
+    items.push({ path: m.path, srcIn: c.in, srcOut, speed: c.speed, volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, start: c.start, trackId: c.trackId, clipId: c.id });
   }
   return items;
 }
@@ -188,7 +188,7 @@ function openExportJobs() {
     box.append(h('div', { class: 'actions' }, h('button', { onclick: () => { closeModal(); openExport(); } }, '+ Новый экспорт'), h('button', { class: 'primary', onclick: closeModal }, 'Закрыть')));
   });
 }
-function exportButtonClick() { if ([...EXP.jobs.values()].some((j) => !j.done) || EXP.jobs.size) openExportJobs(); else openExport(); }
+function exportButtonClick() { if (S.mode === 'photo') return openPhotoExport(); if (S.mode === 'audio') return openAudioExport(); if ([...EXP.jobs.values()].some((j) => !j.done) || EXP.jobs.size) openExportJobs(); else openExport(); }
 
 // ---------- Phone ----------
 async function sendToPhone(file) {
@@ -266,40 +266,71 @@ async function runExport(o, onProgress) {
 }
 
 // ============ Auto captions ============
+const clipName = (c) => { const m = c.mediaId && mediaById(c.mediaId); return m ? m.name : c.type; };
+// opt.mode: 'all' = speech of the whole timeline mixed together;
+// 'sel' = each selected clip with sound on its own, captions linked to that clip (they move with it)
 async function runCaptions(opt, btn, log) {
-  const items = audioItems();
-  if (!items.length) { toast('На таймлайне нет звука'); return; }
-  btn.disabled = true; btn.textContent = 'Распознаю… (может занять несколько минут)';
+  const jobs = [];
+  if (opt.mode === 'sel') {
+    const all = audioItems();
+    const picked = P().clips.filter((c) => S.sel.has(c.id) && (c.type === 'video' || c.type === 'audio'));
+    if (!picked.length) { toast('Выделите на таймлайне аудио или видео со звуком', 4000); return; }
+    for (const c of picked) {
+      const it = all.find((x) => x.clipId === c.id);
+      if (!it) { toast(`«${clipName(c)}»: нет звука или он выключен — пропускаю`, 4000); continue; }
+      jobs.push({ items: [{ ...it, start: 0 }], offset: c.start, duration: (it.srcOut - it.srcIn) / it.speed, clip: c, name: clipName(c) });
+    }
+    if (!jobs.length) return;
+  } else {
+    const items = audioItems();
+    if (!items.length) { toast('На таймлайне нет звука'); return; }
+    jobs.push({ items, offset: 0, duration: projectDuration(), clip: null, name: 'всё видео' });
+  }
+  btn.disabled = true;
   log.textContent = '';
   const onLog = (s) => { log.textContent = (log.textContent + s).slice(-3000); log.scrollTop = log.scrollHeight; };
   api.onWhisperLog(onLog);
   try {
-    const segs = await api.whisper({ audio: items, duration: projectDuration(), language: opt.language, model: opt.model });
-    const chunks = [];
-    for (const s of segs) {
-      const words = (s.words && s.words.length ? s.words : null);
-      if (!words) { chunks.push({ start: s.start, end: s.end, text: s.text, words: null }); continue; }
-      for (let i = 0; i < words.length; i += opt.words) {
-        const part = words.slice(i, i + opt.words);
-        chunks.push({ start: part[0].start, end: part[part.length - 1].end, text: part.map((w) => w.word.trim()).join(' '), words: part });
+    const results = [];
+    for (let j = 0; j < jobs.length; j++) {
+      const job = jobs[j];
+      btn.textContent = jobs.length > 1 ? `Распознаю клип ${j + 1} из ${jobs.length}…` : 'Распознаю… (может занять несколько минут)';
+      const segs = await api.whisper({ audio: job.items, duration: job.duration, language: opt.language, model: opt.model, prompt: SET.capHints || '' });
+      const chunks = [];
+      for (const s of segs) {
+        const words = (s.words && s.words.length ? s.words : null);
+        if (!words) { chunks.push({ start: s.start, end: s.end, text: s.text, words: null }); continue; }
+        for (let i = 0; i < words.length; i += opt.words) {
+          const part = words.slice(i, i + opt.words);
+          chunks.push({ start: part[0].start, end: part[part.length - 1].end, text: part.map((w) => w.word.trim()).join(' '), words: part });
+        }
       }
+      if (chunks.length) results.push({ job, chunks });
     }
-    if (!chunks.length) { toast('Речь не найдена'); return; }
+    if (!results.length) { toast('Речь не найдена'); return; }
+    let total = 0;
     change(() => {
-      const tr = { id: uid('t'), kind: 'text', name: 'Субтитры', captions: true };
-      P().tracks.unshift(tr);
-      for (let i = 0; i < chunks.length; i++) {
-        const ch = chunks[i];
-        const end = i + 1 < chunks.length ? Math.min(chunks[i + 1].start, ch.end + 0.6) : ch.end + 0.3;
-        const c = makeClip('text', { trackId: tr.id, start: Math.max(0, ch.start), dur: Math.max(0.2, end - ch.start) });
-        Object.assign(c.text, TEXT_DEFAULT, opt.style, { text: ch.text });
-        if (P().height > P().width) c.text.size = Math.round(c.text.size * 1.1);
-        c.tf.y = opt.y * P().height;
-        if (ch.words) c.words = ch.words.map((w) => ({ start: w.start - c.start, end: w.end - c.start, word: w.word }));
-        P().clips.push(c);
+      let shared = null; // whole-video mode: one new track
+      for (const { job, chunks } of results) {
+        const a = job.offset, b = job.offset + job.duration;
+        // a captions track that is free over this clip, otherwise a new one
+        let tr = job.clip ? P().tracks.find((t) => t.captions && !t.locked && !P().clips.some((x) => x.trackId === t.id && x.start < b && x.start + x.dur > a)) : shared;
+        if (!tr) { tr = { id: uid('t'), kind: 'text', name: 'Субтитры', captions: true }; P().tracks.unshift(tr); if (!job.clip) shared = tr; }
+        for (let i = 0; i < chunks.length; i++) {
+          const ch = chunks[i];
+          const end = i + 1 < chunks.length ? Math.min(chunks[i + 1].start, ch.end + 0.6) : Math.min(ch.end + 0.3, job.duration);
+          const c = makeClip('text', { trackId: tr.id, start: Math.max(0, a + ch.start), dur: Math.max(0.2, end - ch.start) });
+          Object.assign(c.text, TEXT_DEFAULT, opt.style, { text: applyCapDict(ch.text) });
+          if (P().height > P().width) c.text.size = Math.round(c.text.size * 1.1);
+          c.tf.y = opt.y * P().height;
+          if (ch.words) { c.words = ch.words.map((w) => ({ start: a + w.start - c.start, end: a + w.end - c.start, word: w.word })); retimeWords(c); }
+          if (job.clip && opt.link) { c.link = job.clip.id; c.linkAt = job.clip.start; }
+          P().clips.push(c);
+          total++;
+        }
       }
     });
-    toast(`Добавлено субтитров: ${chunks.length}`);
+    toast(`Добавлено субтитров: ${total}` + (opt.mode === 'sel' && opt.link ? ' — они двигаются вместе со своим клипом' : ''), 4000);
   } catch (e) {
     onLog('\nОшибка: ' + e.message);
     toast('Ошибка распознавания — подробности в журнале', 4000);
@@ -309,24 +340,85 @@ async function runCaptions(opt, btn, log) {
 }
 
 // ============ Voice recording ============
-let recorder = null;
+let recorder = null, recCountdown = null;
+const fmtClockShort = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+// Big overlay over the player: countdown digits, then a red "● REC 0:07" timer
+function recOverlay() {
+  let el = $('#recOverlay');
+  if (!el) { el = h('div', { id: 'recOverlay' }); $('#stageWrap').append(el); }
+  return el;
+}
+function recBeep(high) {
+  if (SET.recBeep === false) return;
+  try {
+    const ac = recBeep.ac || (recBeep.ac = new AudioContext());
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.frequency.value = high ? 1320 : 880;
+    g.gain.setValueAtTime(0.25, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + (high ? 0.35 : 0.15));
+    o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.4);
+  } catch (_) {}
+}
+function stopCountdown(mic) {
+  clearInterval(recCountdown.timer);
+  recCountdown = null;
+  mic.close();
+  $('#recBtn').classList.remove('recording', 'counting');
+  recOverlay().remove();
+  toast('Запись отменена');
+}
 async function toggleRecord() {
   if (recorder) { recorder.stop(); return; }
-  let stream;
-  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
-  catch (e) { toast('Нет доступа к микрофону'); return; }
+  if (recCountdown) { stopCountdown(recCountdown.mic); return; } // second press during the countdown cancels it
+  if (toggleRecord.opening) return;
+  // selected device + noise suppression from Settings → Microphone
+  let mic;
+  toggleRecord.opening = true;
+  try { mic = await micOpen(); } catch (e) { toast('Нет доступа к микрофону'); return; } finally { toggleRecord.opening = false; }
+  if (S.playing) pause();
+  // the microphone is opened before the countdown, so recording starts exactly on "0"
+  let left = Math.max(0, Math.round(+SET.recCountdown || 0));
+  if (left > 0) {
+    $('#recBtn').classList.add('counting');
+    const ov = recOverlay();
+    const show = () => { ov.className = 'count'; ov.textContent = ''; ov.append(h('b', {}, String(left)), h('span', {}, 'Запись начнётся через… (🎙 или Esc — отмена)')); };
+    show(); recBeep(false);
+    recCountdown = { mic, timer: setInterval(() => {
+      left--;
+      if (left > 0) { show(); recBeep(false); return; }
+      clearInterval(recCountdown.timer); recCountdown = null;
+      recBeep(true);
+      startRecording(mic);
+    }, 1000) };
+    return;
+  }
+  startRecording(mic);
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && recCountdown) { e.stopPropagation(); stopCountdown(recCountdown.mic); } }, true);
+function startRecording(mic) {
   const chunks = [];
   const at = S.time;
-  recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+  $('#recBtn').classList.remove('counting');
+  const ov = recOverlay(), t0 = performance.now();
+  ov.className = 'rec'; ov.textContent = '';
+  const clock = h('span'), lvl = h('i');
+  ov.append(clock, h('span', { class: 'recLvl' }, lvl));
+  const tick = () => { clock.textContent = `● REC ${fmtClockShort((performance.now() - t0) / 1000)}`; };
+  tick();
+  const timer = setInterval(tick, 250);
+  const meter = setInterval(() => { lvl.style.width = (clamp((mic.level().peak + 60) / 60, 0, 1) * 100).toFixed(0) + '%'; }, 60);
+  // uncompressed PCM when the browser can, so the voice is not compressed twice (WebM Opus -> AAC)
+  const pcm = MediaRecorder.isTypeSupported('audio/webm;codecs=pcm');
+  recorder = new MediaRecorder(mic.stream, pcm ? { mimeType: 'audio/webm;codecs=pcm' } : { mimeType: 'audio/webm', audioBitsPerSecond: 256000 });
   recorder.ondataavailable = (e) => chunks.push(e.data);
   recorder.onstop = async () => {
-    stream.getTracks().forEach((t) => t.stop());
+    mic.close();
     recorder = null;
+    clearInterval(timer); clearInterval(meter); ov.remove();
     $('#recBtn').classList.remove('recording');
     if (S.playing) pause();
     const blob = new Blob(chunks, { type: 'audio/webm' });
     const raw = await api.saveBlob(await blob.arrayBuffer(), 'webm');
-    const fixed = await api.extractAudio(raw);
+    const fixed = await api.extractAudio(raw, true);
     const m = await importFile(fixed, 'Голос ' + new Date().toLocaleTimeString('ru-RU'));
     if (!m) return;
     change(() => {

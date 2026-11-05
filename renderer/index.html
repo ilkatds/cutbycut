@@ -2,27 +2,32 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>Склейка</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; img-src * file: data: blob:; media-src * file: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>CutByCut</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob:; img-src * file: data: blob:; media-src * file: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'">
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="ui.css">
+<link rel="icon" href="logo.svg">
 </head>
-<body>
+<body class="cream">
 <div id="app">
   <!-- Top bar -->
   <header id="topbar">
-    <div class="brand"><span class="logo">◧</span> Склейка</div>
-    <div class="menu">
+    <div class="brand"><img src="logo.svg" alt=""> CutByCut</div>
+    <button id="modeChip" title="Сменить редактор"></button>
+    <div class="menu" id="topMenu">
       <button data-cmd="new" title="Новый проект (Ctrl+N)">Новый</button>
       <button data-cmd="open" title="Открыть проект (Ctrl+O)">Открыть</button>
       <button data-cmd="save" title="Сохранить проект (Ctrl+S)">Сохранить</button>
+      <button data-cmd="projectMenu" title="Собрать проект, пропавшие файлы, перенос в другие редакторы">Ещё ▾</button>
       <span class="sep"></span>
       <button data-cmd="undo" title="Отменить (Ctrl+Z)">↶</button>
       <button data-cmd="redo" title="Повторить (Ctrl+Y)">↷</button>
     </div>
     <div id="projName" contenteditable="true" spellcheck="false" data-no-i18n>Без названия</div>
-    <div class="right">
-      <span id="saveState"></span>
+    <span id="saveState"></span>
+    <div class="right" id="topRight">
       <button data-cmd="ai" title="ИИ-помощник (Ctrl+K)">✨ Помощник</button>
+      <button data-cmd="uiEditor" title="Редактор интерфейса (Ctrl+Shift+L)">⊞</button>
       <button data-cmd="versions" title="Версии проекта">🕘</button>
       <button data-cmd="settings" title="Настройки (Ctrl+,)">⚙</button>
       <button data-cmd="help" title="Руководство (F1)">?</button>
@@ -34,8 +39,10 @@
     <!-- Left: asset panels -->
     <section id="left">
       <nav id="rail">
+        <div id="railInk"></div>
         <button data-tab="media" class="active"><i>▣</i><span>Медиа</span></button>
         <button data-tab="audio"><i>♪</i><span>Аудио</span></button>
+        <button data-tab="canvas"><i>⬚</i><span>Холст</span></button>
         <button data-tab="text"><i>T</i><span>Текст</span></button>
         <button data-tab="footage"><i>🎞</i><span>Футажи</span></button>
         <button data-tab="stickers"><i>☺</i><span>Стикеры</span></button>
@@ -51,8 +58,6 @@
       <div id="panel"></div>
     </section>
 
-    <div class="resizer v" data-resize="left"></div>
-
     <!-- Center: preview -->
     <section id="center">
       <div id="playerHead">
@@ -65,13 +70,14 @@
           <canvas id="preview"></canvas>
           <div id="overlay"></div>
         </div>
+        <canvas id="audioViz"></canvas>
       </div>
       <div id="transport">
-        <span id="tcur" class="tc">00:00:00</span><span class="tc dim"> / </span><span id="tdur" class="tc dim">00:00:00</span>
+        <div id="tcWrap"><span id="tcur" class="tc">00:00:00</span><span class="tc dim"> / </span><span id="tdur" class="tc dim">00:00:00</span></div>
         <div class="grow"></div>
-        <button data-cmd="prevFrame" title="Кадр назад (←)">⏮</button>
+        <button data-cmd="prevFrame" title="Кадр назад (←)">◂◂</button>
         <button data-cmd="play" id="playBtn" title="Воспроизвести (Пробел)">▶</button>
-        <button data-cmd="nextFrame" title="Кадр вперёд (→)">⏭</button>
+        <button data-cmd="nextFrame" title="Кадр вперёд (→)">▸▸</button>
         <div class="grow"></div>
         <select id="previewQ" title="Качество превью">
           <option value="0.5">Превью: ½</option>
@@ -83,17 +89,11 @@
       </div>
     </section>
 
-    <div class="resizer v" data-resize="right"></div>
-
     <!-- Right: inspector -->
     <section id="right">
       <div id="inspTabs"></div>
       <div id="inspector"></div>
     </section>
-  </main>
-
-  <div class="resizer h" data-resize="timeline"></div>
-
   <!-- Timeline -->
   <section id="timelineArea">
     <div id="tlToolbar">
@@ -132,7 +132,17 @@
       </div>
     </div>
   </section>
+
+  <!-- Layers (photo editor) -->
+  <section id="layersArea">
+    <div id="layersHead"><span>Слои</span><div class="grow"></div>
+      <button id="layAddImg" title="Добавить изображение">＋ Фото</button>
+      <button id="layAddText" title="Добавить текст">＋ Текст</button></div>
+    <div id="layersList"></div>
+  </section>
+  </main>
 </div>
+<div id="dockPark"></div>
 
 <div id="ctxMenu" class="hidden"></div>
 <div id="modal" class="hidden"><div class="box"></div></div>
@@ -146,6 +156,7 @@
 <script src="js/timeline.js"></script>
 <script src="js/panels.js"></script>
 <script src="js/inspector.js"></script>
+<script src="js/mic.js"></script>
 <script src="js/export.js"></script>
 <script src="js/ai.js"></script>
 <script src="js/extras.js"></script>
@@ -153,6 +164,9 @@
 <script src="js/footage.js"></script>
 <script src="js/online.js"></script>
 <script src="js/settings.js"></script>
+<script src="js/modes.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/portable.js"></script>
 <script src="js/projects.js"></script>
 <script src="js/guide.js"></script>
 <script src="js/app.js"></script>

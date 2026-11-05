@@ -13,10 +13,27 @@ const S = {
   dirty: false,
 };
 
-function newProject() {
+function newProject(mode = 'video') {
   const id = (k) => uid('t');
+  if (mode === 'audio') return {
+    version: 1, mode, name: 'Без названия',
+    ratio: '16:9', width: 1920, height: 1080, fps: 30,
+    bg: { type: 'color', color: '#000000', blur: 40 },
+    media: [],
+    tracks: [{ id: id(), kind: 'audio', name: 'Дорожка 1', main: true }, { id: id(), kind: 'audio', name: 'Дорожка 2' }, { id: id(), kind: 'audio', name: 'Дорожка 3' }],
+    clips: [], markers: [],
+  };
+  if (mode === 'photo') return {
+    version: 1, mode, name: 'Без названия',
+    ratio: 'custom', width: 1080, height: 1080, fps: 30,
+    bg: { type: 'color', color: '#ffffff', blur: 40 },
+    media: [],
+    tracks: [{ id: id(), kind: 'text', name: 'Текст' }, { id: id(), kind: 'video', name: 'Фон', main: true }],
+    clips: [], markers: [],
+  };
   return {
     version: 1,
+    mode,
     name: 'Без названия',
     ratio: '16:9', width: 1920, height: 1080, fps: 30,
     bg: { type: 'color', color: '#000000', blur: 40 },
@@ -51,7 +68,7 @@ function makeClip(type, extra = {}) {
     anim: { in: 'none', inDur: 0.5, out: 'none', outDur: 0.5, loop: 'none', loopSpeed: 1 },
   };
   if (type === 'video' || type === 'image' || type === 'audio') Object.assign(c, { mediaId: null, in: 0, speed: 1, volume: 1, fadeIn: 0, fadeOut: 0, muted: false, freeze: null });
-  if (type === 'video' || type === 'image') Object.assign(c, { filter: { id: 'none', amt: 1 }, adj: { ...ADJUST_DEFAULT }, fxList: [], chroma: { on: false, color: '#00ff00', sim: 0.35, smooth: 0.1 }, trans: null, mask: { type: 'none', size: 0.8, feather: 0.05, invert: false } });
+  if (type === 'video' || type === 'image') Object.assign(c, { filter: { id: 'none', amt: 1 }, adj: { ...ADJUST_DEFAULT }, fxList: [], chroma: { on: false, color: '#00ff00', sim: 0.35, smooth: 0.1 }, trans: null, mask: { ...MASK_DEFAULT } });
   if (type === 'text' || type === 'sticker') Object.assign(c, { text: { ...TEXT_DEFAULT }, words: null, fxList: [], trans: null });
   if (type === 'gen') Object.assign(c, { gen: { id: 'achievement', text: '', text2: '', color: '#2a2f3d', color2: '#ffc83c' }, fxList: [], trans: null });
   if (type === 'fx') c.fx = { id: 'shake', amt: 0.6 };
@@ -134,6 +151,11 @@ function visualState(c, t) {
 
 // ============ Media sources (preview) ============
 const AC = new (window.AudioContext || window.webkitAudioContext)();
+// everything the preview plays goes through here, the audio editor's spectrum listens to it
+const AC_MASTER = AC.createGain(), AC_AN = AC.createAnalyser();
+AC_AN.fftSize = 2048;
+AC_MASTER.connect(AC_AN);
+AC_MASTER.connect(AC.destination);
 const elPool = new Map(); // player key -> { el, src, gain, owner }
 // preview plays the light proxy copy when it is ready (export always reads m.path)
 function mediaPath(m) { const cc = S.cache[m.id]; return (S.useProxy !== false && cc && cc.proxy) || m.path; }
@@ -172,7 +194,7 @@ function getEl(c) {
     try {
       const node = AC.createMediaElementSource(el);
       gain = AC.createGain();
-      node.connect(gain).connect(AC.destination);
+      node.connect(gain).connect(AC_MASTER);
     } catch (_) {}
     e = { el, src, gain, pending: null, cache: null, cacheOk: false, owner: null };
     const ent = e;
@@ -586,7 +608,6 @@ function renderClipLayer(c, t, W, H, k, slot) {
       let drawSrc = src;
       if (c.chroma && c.chroma.on) drawSrc = chromaKey(src, Math.min(dw * vs.scale, 1280), Math.min(dh * vs.scale, 720), c.chroma);
       ctx.save();
-      applyMask(ctx, c.mask, dw, dh);
       ctx.filter = (look.css + (blur > 0 ? ` blur(${(blur * k).toFixed(1)}px)` : '')).trim() || 'none';
       const cr = c.crop;
       if (cr && (cr.l || cr.r || cr.t || cr.b)) {
@@ -601,27 +622,116 @@ function renderClipLayer(c, t, W, H, k, slot) {
         applyTints(ctx, look, dw, dh, t);
       }
       ctx.restore();
+      if (c.mask && c.mask.type !== 'none') applyMask(cv, ctx, c.mask, dw, dh, k);
     }
     ctx.restore();
   }
-  if (c.fxList && c.fxList.length) for (const fx of c.fxList) applyEffect(fx.id, cv, t - c.start, c.dur, fx.amt, k, t);
+  if (c.fxList && c.fxList.length) for (const fx of c.fxList) applyEffect(fx.id, cv, t - c.start, c.dur, fx.amt, k, t, fx);
   return { cv, alpha: clamp(vs.alpha, 0, 1) };
 }
-function applyMask(ctx, mask, dw, dh) {
-  if (!mask || mask.type === 'none') return;
-  const s = mask.size;
-  ctx.beginPath();
-  if (mask.invert) ctx.rect(-dw, -dh, dw * 2, dh * 2);
-  if (mask.type === 'circle') { const r = Math.min(dw, dh) / 2 * s; ctx.moveTo(r, 0); ctx.arc(0, 0, r, 0, Math.PI * 2, mask.invert); }
-  else if (mask.type === 'rect') { const w = dw * s, hh = dh * s; if (mask.invert) { ctx.moveTo(-w / 2, -hh / 2); ctx.lineTo(-w / 2, hh / 2); ctx.lineTo(w / 2, hh / 2); ctx.lineTo(w / 2, -hh / 2); ctx.closePath(); } else ctx.rect(-w / 2, -hh / 2, w, hh); }
-  else if (mask.type === 'heart') {
-    const r = Math.min(dw, dh) * s * 0.5;
-    ctx.moveTo(0, r * 0.35);
-    ctx.bezierCurveTo(-r * 1.2, -r * 0.55, -r * 0.45, -r * 1.15, 0, -r * 0.55);
-    ctx.bezierCurveTo(r * 0.45, -r * 1.15, r * 1.2, -r * 0.55, 0, r * 0.35);
-    ctx.closePath();
-  } else if (mask.type === 'band') { const hh = dh * s * 0.5; ctx.rect(-dw / 2, -hh / 2, dw, hh); }
-  ctx.clip('evenodd');
+// ============ Masks ============
+// A mask is an alpha shape in the clip's own coordinates (it moves, scales and rotates with the clip).
+// mode: cut = hide outside; darken/blur/gray/pixel = change only what is outside, keep the clip.
+const MASK_DEFAULT = { type: 'none', mode: 'cut', size: 0.8, feather: 0.05, invert: false, x: 0, y: 0, rot: 0, aspect: 1, round: 0.25, color: '#000000', strength: 0.7 };
+const MASK_SHAPES = [
+  { id: 'none', name: 'Нет' }, { id: 'circle', name: 'Круг / овал' }, { id: 'rect', name: 'Прямоугольник' }, { id: 'round', name: 'Скруглённый' },
+  { id: 'heart', name: 'Сердце' }, { id: 'star', name: 'Звезда' }, { id: 'triangle', name: 'Треугольник' }, { id: 'diamond', name: 'Ромб' },
+  { id: 'hexagon', name: 'Шестиугольник' }, { id: 'band', name: 'Полоса' }, { id: 'vband', name: 'Вертикальная полоса' }, { id: 'split', name: 'Половина' },
+  { id: 'linear', name: 'Градиент' }, { id: 'radial', name: 'Виньетка' },
+];
+const MASK_MODES = [['cut', 'Обрезать снаружи'], ['darken', 'Затемнить снаружи'], ['blur', 'Размыть снаружи'], ['gray', 'Ч/б снаружи'], ['pixel', 'Пикселизировать снаружи']];
+const MASK_PRESETS = [
+  { name: 'Затемнение краёв', m: { type: 'radial', mode: 'darken', size: 1.25, feather: 0.2, strength: 0.75, color: '#000000', aspect: 1.5 } },
+  { name: 'Прожектор', m: { type: 'circle', mode: 'darken', size: 0.55, feather: 0.12, strength: 0.85, color: '#000000' } },
+  { name: 'Кинополосы', m: { type: 'band', mode: 'darken', size: 1.5, feather: 0, strength: 1, color: '#000000' } },
+  { name: 'Затемнение снизу', m: { type: 'linear', mode: 'darken', y: 0.15, feather: 0.35, strength: 0.85, color: '#000000' } },
+  { name: 'Затемнение сверху', m: { type: 'linear', mode: 'darken', y: -0.15, rot: 180, feather: 0.35, strength: 0.85, color: '#000000' } },
+  { name: 'Засветка краёв', m: { type: 'radial', mode: 'darken', size: 1.2, feather: 0.25, strength: 0.7, color: '#ffffff', aspect: 1.5 } },
+  { name: 'Фокус размытием', m: { type: 'circle', mode: 'blur', size: 0.6, feather: 0.1, strength: 0.5 } },
+  { name: 'Ч/б вокруг', m: { type: 'circle', mode: 'gray', size: 0.6, feather: 0.08, strength: 1 } },
+  { name: 'Цензура', m: { type: 'rect', mode: 'pixel', size: 0.3, feather: 0, strength: 0.5, invert: true } },
+  { name: 'Плавный край сбоку', m: { type: 'linear', mode: 'cut', rot: 90, feather: 0.3 } },
+  { name: 'Окно', m: { type: 'round', mode: 'cut', size: 0.75, feather: 0.01, round: 0.3 } },
+  { name: 'Сердечко', m: { type: 'heart', mode: 'darken', size: 0.9, feather: 0.06, strength: 0.9, color: '#1a0008' } },
+];
+const maskPool = new CanvasPool();
+function polyPath(x, n, R, a, inner = 0) {
+  const pts = inner ? n * 2 : n;
+  for (let i = 0; i < pts; i++) {
+    const r = inner && i % 2 ? R * inner : R, ang = -Math.PI / 2 + (i * Math.PI * 2) / pts;
+    const px = Math.cos(ang) * r * a, py = Math.sin(ang) * r;
+    if (i) x.lineTo(px, py); else x.moveTo(px, py);
+  }
+  x.closePath();
+}
+function maskShapePath(x, mk, dw, dh, R, big) {
+  const s = mk.size, a = mk.aspect;
+  switch (mk.type) {
+    case 'circle': x.ellipse(0, 0, R * a, R, 0, 0, Math.PI * 2); break;
+    case 'rect': x.rect((-dw * s * a) / 2, (-dh * s) / 2, dw * s * a, dh * s); break;
+    case 'round': { const w = dw * s * a, hh = dh * s; x.roundRect(-w / 2, -hh / 2, w, hh, (clamp(mk.round, 0, 1) * Math.min(w, hh)) / 2); break; }
+    case 'heart':
+      x.moveTo(0, R * 0.35);
+      x.bezierCurveTo(-R * 1.2 * a, -R * 0.55, -R * 0.45 * a, -R * 1.15, 0, -R * 0.55);
+      x.bezierCurveTo(R * 0.45 * a, -R * 1.15, R * 1.2 * a, -R * 0.55, 0, R * 0.35);
+      x.closePath(); break;
+    case 'star': polyPath(x, 5, R, a, 0.45); break;
+    case 'triangle': polyPath(x, 3, R, a); break;
+    case 'diamond': polyPath(x, 4, R, a); break;
+    case 'hexagon': polyPath(x, 6, R, a); break;
+    case 'band': x.rect(-big, -dh * s * 0.25, big * 2, dh * s * 0.5); break;
+    case 'vband': x.rect(-dw * s * 0.25, -big, dw * s * 0.5, big * 2); break;
+    case 'split': x.rect(-big, -big, big * 2, big); break; // upper half; rotate to pick the side
+  }
+}
+// White where the clip is kept, transparent where the mask mode applies
+function buildMask(mk, tf, dw, dh, W, H) {
+  const cv = maskPool.get(0, W, H), x = cv.getContext('2d');
+  x.setTransform(tf);
+  x.translate(mk.x * dw, mk.y * dh);
+  x.rotate((mk.rot * Math.PI) / 180);
+  const R = (Math.min(dw, dh) / 2) * mk.size, big = (dw + dh) * 4;
+  if (mk.type === 'linear') {
+    const fw = Math.max(1, mk.feather * dh * 2);
+    const g = x.createLinearGradient(0, -fw / 2, 0, fw / 2);
+    g.addColorStop(0, '#fff'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = g; x.fillRect(-big, -big, big * 2, big * 2);
+  } else if (mk.type === 'radial') {
+    x.scale(mk.aspect, 1);
+    const g = x.createRadialGradient(0, 0, R * clamp(1 - mk.feather * 4, 0, 0.98), 0, 0, R);
+    g.addColorStop(0, '#fff'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = g; x.fillRect(-big, -big, big * 2, big * 2);
+  } else {
+    const f = mk.feather * 0.35 * Math.min(dw, dh) * Math.hypot(tf.a, tf.b); // blur sigma; the visible edge is ~3x wider
+    if (f > 0.5) x.filter = `blur(${f.toFixed(1)}px)`;
+    x.fillStyle = '#fff';
+    x.beginPath(); maskShapePath(x, mk, dw, dh, R, big); x.fill();
+    x.filter = 'none';
+  }
+  if (mk.invert) { x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'xor'; x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.globalCompositeOperation = 'source-over'; }
+  return cv;
+}
+function applyMask(cv, ctx, mask, dw, dh, k) {
+  const mk = { ...MASK_DEFAULT, ...mask };
+  const W = cv.width, H = cv.height;
+  const m = buildMask(mk, ctx.getTransform(), dw, dh, W, H);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (mk.mode === 'cut') { ctx.globalCompositeOperation = 'destination-in'; ctx.drawImage(m, 0, 0); ctx.restore(); return; }
+  const st = clamp(mk.strength, 0, 1);
+  const o = maskPool.get(1, W, H), ox = o.getContext('2d');
+  if (mk.mode === 'darken') { ox.globalAlpha = st; ox.fillStyle = mk.color; ox.fillRect(0, 0, W, H); ox.globalAlpha = 1; }
+  else if (mk.mode === 'blur') { ox.filter = `blur(${((2 + st * 30) * k).toFixed(1)}px)`; ox.drawImage(cv, 0, 0); ox.filter = 'none'; }
+  else if (mk.mode === 'gray') { ox.filter = 'grayscale(1)'; ox.drawImage(cv, 0, 0); ox.filter = 'none'; ctx.globalAlpha = st; }
+  else if (mk.mode === 'pixel') {
+    const b = Math.max(2, (4 + st * 40) * k), sm = maskPool.get(2, Math.max(1, Math.ceil(W / b)), Math.max(1, Math.ceil(H / b)));
+    sm.getContext('2d').drawImage(cv, 0, 0, sm.width, sm.height);
+    ox.imageSmoothingEnabled = false; ox.drawImage(sm, 0, 0, W, H); ox.imageSmoothingEnabled = true;
+  }
+  ox.globalCompositeOperation = 'destination-out'; ox.drawImage(m, 0, 0); ox.globalCompositeOperation = 'source-over';
+  ctx.globalCompositeOperation = 'source-atop';
+  ctx.drawImage(o, 0, 0);
+  ctx.restore();
 }
 
 // ============ Effects (operate on a whole canvas) ============
@@ -651,7 +761,8 @@ function drawTransformed(cv, fn) {
 function particles(ctx, w, hh, lt, n, draw) {
   for (let i = 0; i < n; i++) draw(i, hash(i * 3.1), hash(i * 7.7 + 1), hash(i * 1.3 + 5));
 }
-function applyEffect(id, cv, lt, dur, amt, k, gt) {
+// opt: the effect object itself, for effects with their own settings (e.g. where the spotlight points)
+function applyEffect(id, cv, lt, dur, amt, k, gt, opt) {
   const ctx = cv.getContext('2d');
   const w = cv.width, hh = cv.height;
   const p = clamp(lt / Math.max(0.01, dur), 0, 1);
@@ -800,7 +911,7 @@ function applyEffect(id, cv, lt, dur, amt, k, gt) {
       ctx.filter = 'sepia(.25) contrast(1.05)'; ctx.drawImage(src, -fw / 2, -fh / 2, fw, fh);
       break;
     }
-    default: if (typeof extraEffect === 'function') extraEffect(id, cv, ctx, lt, dur, amt, k, gt);
+    default: if (typeof extraEffect === 'function') extraEffect(id, cv, ctx, lt, dur, amt, k, gt, opt);
   }
   ctx.restore();
 }
@@ -847,8 +958,11 @@ function renderFrame(ctx, t, W, H) {
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
-  ctx.fillStyle = pr.bg.type === 'color' || pr.bg.type === 'blur' ? pr.bg.color : '#000';
-  ctx.fillRect(0, 0, W, H);
+  if (pr.bg.transparent) ctx.clearRect(0, 0, W, H);
+  else {
+    ctx.fillStyle = pr.bg.type === 'color' || pr.bg.type === 'blur' ? pr.bg.color : '#000';
+    ctx.fillRect(0, 0, W, H);
+  }
   const mainTrack = pr.tracks.find((tr) => tr.main);
   if (pr.bg.type === 'blur' && mainTrack) {
     const c = clipsOn(mainTrack.id).find((c) => activeAt(c, t) && (c.type === 'video' || c.type === 'image'));
@@ -892,7 +1006,7 @@ function renderFrame(ctx, t, W, H) {
 }
 function applyFxClip(cv, c, t, k) {
   const lt = t - c.start;
-  if (c.type === 'fx') { applyEffect(c.fx.id, cv, lt, c.dur, c.fx.amt, k, t); return; }
+  if (c.type === 'fx') { applyEffect(c.fx.id, cv, lt, c.dur, c.fx.amt, k, t, c.fx); return; }
   const look = c.type === 'filter' ? lookFor(c.filter, null) : lookFor(null, c.adj);
   const ctx = cv.getContext('2d');
   const src = copyOf(cv, 12);
@@ -923,6 +1037,7 @@ function presentFrame(t) {
   renderFrame(backCv.getContext('2d'), t, cv.width, cv.height);
   if (!S.frameMissing || !S.hadFrame || !S.playing || S.missStreak > 45) {
     const pc = cv.getContext('2d');
+    if (P().bg.transparent) pc.clearRect(0, 0, cv.width, cv.height);
     pc.drawImage(backCv, 0, 0);
     if (S.frameMissing) {
       // nothing decoded yet (file still opening): say so instead of a silent black screen

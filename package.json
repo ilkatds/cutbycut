@@ -1,16 +1,19 @@
 {
-  "name": "sklejka",
-  "productName": "Склейка",
-  "version": "1.0.0",
-  "description": "Бесплатный видеоредактор: таймлайн, текст, фильтры, переходы, автосубтитры, экспорт MP4",
+  "name": "cutbycut",
+  "productName": "CutByCut",
+  "version": "2.0.0",
+  "description": "Видео, аудио и фото в одном бесплатном редакторе",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "pack": "electron-packager . Sklejka --platform=win32 --arch=x64 --out=dist --overwrite --icon=icon.ico --ignore=^/dist"
+    "pack": "electron-packager . CutByCut --platform=win32 --arch=x64 --out=dist --overwrite --icon=icon.ico --ignore=^/dist"
   },
   "license": "MIT",
   "devDependencies": {
     "@electron/packager": "^18.3.6",
     "electron": "^33.2.1"
+  },
+  "dependencies": {
+    "@sapphi-red/web-noise-suppressor": "^0.4.1"
   }
 }

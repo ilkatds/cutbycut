@@ -7,7 +7,7 @@ const TL = {
   rows: [], // [{ track, y, h }]
   drag: null,
 
-  trackH(tr) { return tr.main ? TRACK_H.main : TRACK_H[tr.kind]; },
+  trackH(tr) { return Math.round((tr.main && tr.kind !== 'audio' ? TRACK_H.main : TRACK_H[tr.kind]) * (+SET.trackScale || 1) * (S.mode === 'audio' && tr.kind === 'audio' ? 1.9 : 1)); },
 
   render() {
     const pr = P();
@@ -177,13 +177,14 @@ const TL = {
     cv.style.position = 'sticky';
     const ctx = cv.getContext('2d');
     ctx.clearRect(0, 0, w, 26);
-    ctx.fillStyle = '#16171d'; ctx.fillRect(0, 0, w, 26);
+    const uc = uiColors();
+    ctx.fillStyle = uc.bg; ctx.fillRect(0, 0, w, 26);
     const pps = S.pps;
     const steps = [1 / 30, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
     const step = steps.find((s) => s * pps >= 70) || 600;
     const sub = step >= 1 ? (step >= 10 ? 5 : step === 5 ? 5 : step === 2 ? 4 : 5) : 5;
     const t0 = scroll.scrollLeft / pps, t1 = (scroll.scrollLeft + w) / pps;
-    ctx.strokeStyle = '#3a3e4d'; ctx.fillStyle = '#8a8ea3'; ctx.font = '10.5px Segoe UI'; ctx.textBaseline = 'top';
+    ctx.strokeStyle = uc.line; ctx.fillStyle = uc.text; ctx.font = '10.5px Segoe UI'; ctx.textBaseline = 'top';
     ctx.beginPath();
     for (let t = Math.floor(t0 / step) * step; t <= t1; t += step) {
       const x = Math.round(t * pps - scroll.scrollLeft) + 0.5;
@@ -437,7 +438,11 @@ const TL = {
           this._newTrack = (above || below) ? { above, kind: KIND_OF[c.type] } : null;
         }
       }
-      // live update element positions
+      // live update element positions (captions linked to a moved clip follow it)
+      if (!trim) {
+        syncLinked();
+        for (const x of P().clips) if (x.link && orig.has(x.link)) { const el = $(`.clip[data-clip="${x.id}"]`); if (el) el.style.left = x.start * S.pps + 'px'; }
+      }
       for (const x of sel) {
         let el = $(`.clip[data-clip="${x.id}"]`);
         const row = $(`.track[data-track="${x.trackId}"]`);

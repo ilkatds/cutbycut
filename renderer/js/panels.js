@@ -4,11 +4,14 @@ let curPanel = 'media';
 let fxCat = 'Все', fltCat = 'Все', fxTarget = 'track';
 
 function setPanel(tab) {
+  const moved = curPanel !== tab;
   curPanel = tab;
   $$('#rail button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   const p = $('#panel');
   p.innerHTML = '';
   (PANELS[tab] || PANELS.media)(p);
+  if (moved) { p.classList.remove('panelIn'); void p.offsetWidth; p.classList.add('panelIn'); }
+  updateRailInk();
 }
 function dragData(el, data) {
   el.draggable = true;
@@ -25,12 +28,13 @@ function selectedVisual() {
 }
 
 const PANELS = {
+  canvas(p) { canvasPanel(p); },
   media(p) {
-    p.append(h('h3', {}, 'Медиа'));
-    p.append(h('div', { class: 'drop', onclick: importDialog }, h('div', { style: { fontSize: '22px' } }, '⇪'), 'Импорт видео, фото, аудио', h('div', { class: 'note' }, 'или перетащите файлы в окно')));
+    p.append(h('h3', {}, S.mode === 'photo' ? 'Изображения' : 'Медиа'));
+    p.append(h('div', { class: 'drop', onclick: importDialog }, h('div', { style: { fontSize: '22px' } }, '⇪'), S.mode === 'photo' ? 'Открыть фото или картинку' : 'Импорт видео, фото, аудио', h('div', { class: 'note' }, 'или перетащите файлы в окно')));
     mediaToolsRow(p);
-    const vis = P().media.filter((m) => m.type !== 'audio');
-    if (!vis.length) { p.append(h('div', { class: 'note' }, 'Здесь появятся импортированные файлы. Нажмите «+» или перетащите на таймлайн.')); return; }
+    const vis = P().media.filter((m) => (S.mode === 'photo' ? m.type === 'image' : m.type !== 'audio'));
+    if (!vis.length) { p.append(h('div', { class: 'note' }, S.mode === 'photo' ? 'Здесь появятся открытые изображения. Двойной клик добавляет новый слой.' : 'Здесь появятся импортированные файлы. Нажмите «+» или перетащите на таймлайн.')); return; }
     const grid = h('div', { class: 'grid' });
     for (const m of vis) grid.append(mediaTile(m));
     p.append(grid);
@@ -41,7 +45,7 @@ const PANELS = {
     p.append(h('div', { class: 'btnRow', style: { marginBottom: '10px' } },
       h('button', { onclick: importDialog }, '⇪ Импорт музыки'),
       h('button', { onclick: () => cmd('record') }, '🎙 Записать голос')));
-    const aud = P().media.filter((m) => m.type === 'audio');
+    const aud = P().media.filter((m) => m.type === 'audio' || (S.mode === 'audio' && m.hasAudio));
     if (aud.length) {
       p.append(h('h4', {}, 'Ваши файлы'));
       const grid = h('div', { class: 'grid' });
@@ -178,7 +182,23 @@ const PANELS = {
 
   captions(p) {
     p.append(h('h3', {}, 'Автосубтитры'));
-    p.append(h('div', { class: 'note' }, 'Распознавание речи на вашем компьютере (Whisper). Интернет не нужен; при первом запуске модель скачивается один раз. Звук берётся со всего таймлайна.'));
+    p.append(h('div', { class: 'note' }, 'Распознавание речи на вашем компьютере (Whisper). Интернет не нужен; при первом запуске модель скачивается один раз.'));
+    const modeNote = h('div', { class: 'note' });
+    const linkRow = h('div', { class: 'row wide' });
+    const link = h('input', { type: 'checkbox' }); link.checked = capUi.link;
+    link.addEventListener('change', () => { capUi.link = link.checked; });
+    linkRow.append(h('label', {}, 'Двигать вместе с клипом'), h('div', {}, link));
+    const drawMode = () => {
+      seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.m === capUi.mode));
+      const n = P().clips.filter((c) => S.sel.has(c.id) && (c.type === 'video' || c.type === 'audio')).length;
+      modeNote.textContent = capUi.mode === 'all' ? 'Звук берётся со всего таймлайна сразу.'
+        : `Каждый выделенный клип распознаётся отдельно, субтитры встают ровно под него. Выделено клипов со звуком: ${n}. Ctrl+щелчок — выделить несколько.`;
+      linkRow.style.display = capUi.mode === 'sel' ? '' : 'none';
+    };
+    const seg = h('div', { class: 'seg' }, ...[['all', 'Всё видео'], ['sel', 'Только выделенное']].map(([m, n]) => h('button', { 'data-m': m, onclick: () => { capUi.mode = m; drawMode(); } }, n)));
+    p.append(h('div', { class: 'row wide' }, h('label', {}, 'Что распознать'), seg), modeNote, linkRow);
+    drawMode();
+    capUi.redraw = drawMode;
     const lang = h('select', {}, ...[['ru', 'Русский'], ['en', 'English'], ['uk', 'Українська'], ['auto', 'Автоопределение']].map(([v, n]) => h('option', { value: v }, n)));
     const model = h('select', {}, ...[['base', 'Быстрая (base)'], ['small', 'Хорошая (small)'], ['medium', 'Точная (medium, медленно)'], ['tiny', 'Черновик (tiny)']].map(([v, n]) => h('option', { value: v }, n)));
     model.value = SET.capModel || 'small';
@@ -194,12 +214,99 @@ const PANELS = {
     p.append(h('div', { class: 'row wide' }, h('label', {}, 'Положение'), pos));
     const log = h('div', { class: 'note', style: { whiteSpace: 'pre-wrap', maxHeight: '140px', overflow: 'auto', fontFamily: 'Consolas', fontSize: '10.5px' } });
     const btn = h('button', { class: 'primary', style: { width: '100%' } }, 'Распознать речь');
-    btn.addEventListener('click', () => runCaptions({ language: lang.value, model: model.value, words: +words.value || 5, style: TEXT_STYLES[+styleSel.value].s, y: +pos.value }, btn, log));
+    btn.addEventListener('click', () => runCaptions({ mode: capUi.mode, link: capUi.link, language: lang.value, model: model.value, words: +words.value || 5, style: TEXT_STYLES[+styleSel.value].s, y: +pos.value }, btn, log));
     p.append(btn, log);
     p.append(h('button', { style: { width: '100%', marginTop: '6px' }, onclick: () => change(() => { const ids = new Set(P().tracks.filter((t) => t.captions).map((t) => t.id)); P().clips = P().clips.filter((c) => !ids.has(c.trackId)); P().tracks = P().tracks.filter((t) => !t.captions); }) }, 'Удалить все субтитры'));
+    captionTools(p);
   },
 };
 
+const capUi = { mode: 'all', link: true, redraw: null, find: '', repl: '', whole: true, cs: false, remember: true, filter: '' };
+
+// ---------- Fixing recognised captions ----------
+const captionClips = () => P().clips.filter((c) => c.type === 'text' && (c.words || (trackById(c.trackId) || {}).captions)).sort((a, b) => a.start - b.start);
+// Word timings drive the karaoke highlight: same number of words -> keep timings, otherwise spread
+// the old span over the new words by their length
+function retimeWords(c) {
+  if (!c.words || !c.words.length) return;
+  const toks = c.text.text.split(/\s+/).filter(Boolean);
+  if (!toks.length) { c.words = []; return; }
+  if (toks.length === c.words.length) { toks.forEach((t, i) => { c.words[i].word = ' ' + t; }); return; }
+  const a = c.words[0].start, b = c.words[c.words.length - 1].end;
+  const tot = toks.reduce((s, t) => s + t.length + 1, 0);
+  let acc = 0;
+  c.words = toks.map((t) => { const s = a + ((b - a) * acc) / tot; acc += t.length + 1; return { start: s, end: a + ((b - a) * acc) / tot, word: ' ' + t }; });
+}
+function replaceRe(from, whole, cs) {
+  const esc = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(whole ? `(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])` : esc, 'gu' + (cs ? '' : 'i'));
+}
+// remembered fixes, applied to every new recognition
+function applyCapDict(text) {
+  for (const d of SET.capDict || []) if (d.from) text = text.replace(replaceRe(d.from, true, false), d.to);
+  return text;
+}
+function captionTools(p) {
+  // --- editor ---
+  p.append(h('h3', { style: { marginTop: '18px' } }, 'Исправить субтитры'));
+  const caps = captionClips();
+  if (!caps.length) { p.append(h('div', { class: 'note' }, 'Здесь появится список субтитров после распознавания — любое слово можно будет исправить.')); }
+  else {
+    const filter = h('input', { type: 'text', placeholder: '🔍 Найти в субтитрах…', value: capUi.filter, style: { width: '100%', marginBottom: '6px' } });
+    const list = h('div', { class: 'capList' });
+    const draw = () => {
+      list.textContent = '';
+      const q = capUi.filter.trim().toLowerCase();
+      for (const c of caps) {
+        if (q && !c.text.text.toLowerCase().includes(q)) continue;
+        const inp = h('input', { type: 'text', value: c.text.text });
+        inp.addEventListener('focus', () => { seek(c.start + 0.01); selectOnly(c.id); });
+        inp.addEventListener('input', () => { beginEdit(); c.text.text = inp.value; requestRender(); });
+        inp.addEventListener('change', () => { retimeWords(c); endEdit(); TL.render(); });
+        inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); const n = inp.parentElement.nextElementSibling; if (n) n.querySelector('input').focus(); } else if (e.key === 'ArrowUp') { e.preventDefault(); const n = inp.parentElement.previousElementSibling; if (n) n.querySelector('input').focus(); } });
+        list.append(h('div', { class: 'capRow' + (S.time >= c.start && S.time < c.start + c.dur ? ' now' : '') },
+          h('button', { class: 'capT', title: 'Перейти', onclick: () => { seek(c.start + 0.01); selectOnly(c.id); } }, fmtTime(c.start, P().fps).slice(0, 5)), inp));
+      }
+      if (!list.children.length) list.append(h('div', { class: 'note' }, 'Ничего не найдено.'));
+    };
+    filter.addEventListener('input', () => { capUi.filter = filter.value; draw(); });
+    draw();
+    p.append(h('div', { class: 'note' }, `Субтитров: ${caps.length}. Щёлкните строку — видео перейдёт туда; Enter / ↓ — следующая строка.`), filter, list);
+  }
+  // --- find & replace ---
+  p.append(h('h3', { style: { marginTop: '18px' } }, 'Найти и заменить'));
+  const fi = h('input', { type: 'text', placeholder: 'Что: склика', value: capUi.find, style: { width: '100%' } });
+  const ri = h('input', { type: 'text', placeholder: 'На что: CutByCut', value: capUi.repl, style: { width: '100%', marginTop: '6px' } });
+  const chkRow = (label, key) => { const i = h('input', { type: 'checkbox' }); i.checked = capUi[key]; i.addEventListener('change', () => { capUi[key] = i.checked; count(); }); return h('label', { class: 'capChk' }, i, label); };
+  const go = h('button', { class: 'primary', style: { width: '100%', marginTop: '6px' } }, 'Заменить везде');
+  const matches = () => { if (!capUi.find) return 0; const re = replaceRe(capUi.find, capUi.whole, capUi.cs); return captionClips().reduce((n, c) => n + (c.text.text.match(re) || []).length, 0); };
+  const count = () => { const n = matches(); go.textContent = capUi.find ? `Заменить везде (${n})` : 'Заменить везде'; go.disabled = !n; };
+  fi.addEventListener('input', () => { capUi.find = fi.value; count(); });
+  ri.addEventListener('input', () => { capUi.repl = ri.value; });
+  go.addEventListener('click', async () => {
+    const re = replaceRe(capUi.find, capUi.whole, capUi.cs);
+    let n = 0;
+    change(() => { for (const c of captionClips()) { const t = c.text.text.replace(re, () => { n++; return capUi.repl; }); if (t !== c.text.text) { c.text.text = t; retimeWords(c); } } });
+    if (capUi.remember && capUi.whole) await saveSetting({ capDict: [...(SET.capDict || []).filter((d) => d.from.toLowerCase() !== capUi.find.toLowerCase()), { from: capUi.find, to: capUi.repl }] });
+    toast(`Заменено: ${n}`);
+    capUi.find = capUi.repl = '';
+    setPanel('captions');
+  });
+  p.append(fi, ri, h('div', { class: 'capChks' }, chkRow('Целое слово', 'whole'), chkRow('Учитывать регистр', 'cs'), chkRow('Запомнить и исправлять в новых субтитрах', 'remember')), go);
+  count();
+  // --- remembered fixes ---
+  const dict = SET.capDict || [];
+  if (dict.length) {
+    const dl = h('div', { class: 'capDict' });
+    dict.forEach((d, i) => dl.append(h('span', { class: 'chip' }, `${d.from} → ${d.to}`, h('b', { title: 'Забыть', onclick: async () => { await saveSetting({ capDict: dict.filter((_, j) => j !== i) }); setPanel('captions'); } }, ' ✕'))));
+    p.append(h('div', { class: 'note' }, 'Запомненные исправления (применяются сами при распознавании):'), dl);
+  }
+  // --- hints for Whisper ---
+  p.append(h('h3', { style: { marginTop: '18px' } }, 'Подсказки для распознавания'));
+  const hints = h('textarea', { placeholder: 'CutByCut, Minecraft, FNAF, ник друга…', style: { minHeight: '54px' } }, SET.capHints || '');
+  hints.addEventListener('change', () => saveSetting({ capHints: hints.value.trim() }));
+  p.append(hints, h('div', { class: 'note' }, 'Имена, ники, названия игр и английские слова через запятую — Whisper будет писать их именно так.'));
+}
 function presetStyle(st) {
   const s = { fontFamily: `"${st.font}"`, fontWeight: st.bold ? 700 : 400, fontStyle: st.italic ? 'italic' : 'normal', color: st.color };
   if (st.gradient) Object.assign(s, { background: `linear-gradient(${st.color},${st.color2})`, WebkitBackgroundClip: 'text', color: 'transparent' });
@@ -398,7 +505,9 @@ function addSticker(ch, at) {
 function dropAsset(d, t, track) {
   if (d.kind === 'media') {
     const m = mediaById(d.id); if (!m) return;
-    const kind = m.type === 'audio' ? 'audio' : 'video';
+    if (S.mode === 'photo') { photoAddImage(m); return; }
+    if (S.mode === 'audio' && !m.hasAudio) { toast('В этом файле нет звука'); return; }
+    const kind = m.type === 'audio' || S.mode === 'audio' ? 'audio' : 'video';
     let tr = track && track.kind === kind ? track : null;
     change(() => {
       const c = clipFromMedia(m);

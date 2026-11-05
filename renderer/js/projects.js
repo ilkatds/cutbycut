@@ -17,7 +17,7 @@ function askText(title, value = '') {
 async function rememberRecent(path) {
   if (!path || /[\\/]versions[\\/]|autosave\.sklejka$/i.test(path)) return;
   const list = (SET.recent || []).filter((r) => r.path !== path);
-  list.unshift({ path, name: P().name, time: Date.now() });
+  list.unshift({ path, name: P().name, mode: P().mode || 'video', time: Date.now() });
   await saveSetting({ recent: list.slice(0, 12) });
 }
 let lastVersionAt = 0;
@@ -49,32 +49,6 @@ async function openVersions() {
     box.append(h('div', { class: 'actions' }, h('button', { class: 'primary', onclick: closeModal }, 'Закрыть')));
   });
 }
-async function showStartScreen(autosaveProject) {
-  const recent = [];
-  for (const r of SET.recent || []) { const st = await api.stat(r.path); if (st) recent.push({ ...r, mtime: st.mtime }); }
-  if (!recent.length && !autosaveProject) return;
-  openModal((box) => {
-    box.style.width = '620px';
-    box.append(h('div', { style: { fontSize: '24px', fontWeight: 800, marginBottom: '4px' } }, h('span', { style: { color: 'var(--accent)' } }, '◧ '), 'Склейка'));
-    box.append(h('div', { class: 'note', style: { marginTop: 0 } }, 'С чего начнём?'));
-    if (autosaveProject) {
-      box.append(h('div', { style: { background: 'var(--accentBg)', border: '1px solid var(--accent)', borderRadius: '10px', padding: '10px 12px', margin: '10px 0' } },
-        h('b', {}, 'Несохранённая работа: '), h('span', { 'data-no-i18n': '' }, `«${autosaveProject.project.name}», клипов: ${autosaveProject.project.clips.length}`),
-        h('div', { class: 'btnRow', style: { marginTop: '8px' } }, h('button', { class: 'primary', onclick: async () => { closeModal(); await openProjectFile(autosaveProject.path); markDirty(); } }, 'Восстановить'))));
-    }
-    if (recent.length) {
-      box.append(h('h4', {}, 'Последние проекты'));
-      for (const r of recent) box.append(h('div', { class: 'panelBar', style: { background: 'var(--bg2)', padding: '8px 10px', borderRadius: '8px', marginBottom: '4px', cursor: 'pointer' }, onclick: async () => { closeModal(); await openProjectFile(r.path); } },
-        h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, 'data-no-i18n': '', title: r.path }, '🎬 ' + (r.name || r.path.split(/[\\/]/).pop())),
-        h('span', { class: 'note', style: { margin: 0 } }, fmtWhen(r.mtime))));
-    }
-    box.append(h('div', { class: 'actions' },
-      h('button', { onclick: () => { closeModal(); openVersions(); } }, '🕘 Версии'),
-      h('button', { onclick: () => { closeModal(); cmd('open'); } }, 'Открыть…'),
-      h('button', { class: 'primary', onclick: closeModal }, '+ Новый проект')));
-  });
-}
-
 // ============ My presets: text styles and clip looks ============
 const TEXT_STYLE_KEYS = ['font', 'size', 'color', 'bold', 'italic', 'underline', 'align', 'letterSpacing', 'lineHeight', 'strokeColor', 'strokeWidth', 'shadowColor', 'shadowBlur', 'shadowDist', 'bgColor', 'bgOpacity', 'bgRadius', 'gradient', 'color2', 'glow', 'glowColor', 'textAnim', 'highlightColor', 'maxWidth', 'uppercase'];
 async function saveTextPreset(c) {

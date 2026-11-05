@@ -58,7 +58,7 @@ PANELS.online = function (p) {
   for (const it of ONL.items) wrap.append(isAudio ? onlineAudioRow(it) : onlineTile(it));
   p.append(wrap);
   p.append(h('div', { class: 'btnRow', style: { margin: '10px 0' } }, h('button', { disabled: ONL.busy, onclick: () => onlineSearch(ONL.page + 1) }, ONL.busy ? 'Загрузка…' : 'Показать ещё')));
-  p.append(h('div', { class: 'note' }, 'Материалы принадлежат авторам. CC0 — можно без условий; CC BY — укажите автора (Склейка сохранит список авторов при экспорте). Pixabay/Pexels — бесплатно для роликов, нельзя продавать сами файлы.'));
+  p.append(h('div', { class: 'note' }, 'Материалы принадлежат авторам. CC0 — можно без условий; CC BY — укажите автора (CutByCut сохранит список авторов при экспорте). Pixabay/Pexels — бесплатно для роликов, нельзя продавать сами файлы.'));
 };
 
 function licBadge(it) { return h('span', { class: 'chip', style: { margin: 0, padding: '1px 6px', fontSize: '10px', cursor: 'default' }, title: it.source }, it.license); }

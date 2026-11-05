@@ -85,7 +85,22 @@ document.addEventListener('mousedown', (e) => { if (!e.target.closest('#ctxMenu'
 function openModal(build) {
   const m = $('#modal'), box = $('.box', m);
   box.innerHTML = '';
+  // rebuilding an open window (a settings tab, say) must not replay the pop-in
+  m.classList.toggle('keep', !m.classList.contains('hidden'));
+  box.removeAttribute('style');
   build(box);
   m.classList.remove('hidden');
 }
-function closeModal() { $('#modal').classList.add('hidden'); }
+function closeModal() {
+  const m = $('#modal');
+  if (m.classList.contains('hidden')) return;
+  // the window is closed for the code at once; a copy of it plays the way out
+  const r = $('.box', m).getBoundingClientRect();
+  m.classList.add('hidden');
+  if (document.body.classList.contains('noanim') || !r.width) return;
+  const box = $('.box', m).cloneNode(true);
+  Object.assign(box.style, { width: r.width + 'px', height: r.height + 'px' });
+  const g = h('div', { class: 'modalGhost' }, box);
+  document.body.append(g);
+  setTimeout(() => g.remove(), 200);
+}

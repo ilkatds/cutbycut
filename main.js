@@ -13,6 +13,9 @@ app.commandLine.appendSwitch('disable-features', 'BackgroundVideoTrackOptimizati
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
 app.commandLine.appendSwitch('enable-accelerated-video-decode');
 
+// Settings, proxies and project versions stay where the app kept them under its old name.
+app.setPath('userData', path.join(app.getPath('appData'), 'Склейка'));
+
 const TMP = path.join(os.tmpdir(), 'sklejka');
 fs.mkdirSync(TMP, { recursive: true });
 
@@ -48,8 +51,8 @@ function createWindow() {
     height: 940,
     minWidth: 1100,
     minHeight: 680,
-    backgroundColor: '#121318',
-    title: 'Склейка',
+    backgroundColor: '#f6efe3',
+    title: 'CutByCut',
     icon: path.join(__dirname, 'icon.ico'),
     autoHideMenuBar: true,
     webPreferences: {
@@ -100,12 +103,16 @@ ipcMain.handle('dialog:saveExport', async (_e, def) => {
   return r.canceled ? null : r.filePath;
 });
 ipcMain.handle('dialog:saveProject', async (_e, def) => {
-  const r = await dialog.showSaveDialog(win, { title: 'Сохранить проект', defaultPath: def, filters: [{ name: 'Проект Склейки', extensions: ['sklejka'] }] });
+  const r = await dialog.showSaveDialog(win, { title: 'Сохранить проект', defaultPath: def, filters: [{ name: 'Проект CutByCut', extensions: ['cutbycut'] }, { name: 'Проект Склейки (старый формат)', extensions: ['sklejka'] }] });
   return r.canceled ? null : r.filePath;
 });
 ipcMain.handle('dialog:openProject', async () => {
-  const r = await dialog.showOpenDialog(win, { title: 'Открыть проект', properties: ['openFile'], filters: [{ name: 'Проект Склейки', extensions: ['sklejka'] }] });
+  const r = await dialog.showOpenDialog(win, { title: 'Открыть проект', properties: ['openFile'], filters: [{ name: 'Проект CutByCut', extensions: ['cutbycut', 'sklejka'] }] });
   return r.canceled ? null : r.filePaths[0];
+});
+ipcMain.handle('dialog:saveFile', async (_e, { title, def, filters }) => {
+  const r = await dialog.showSaveDialog(win, { title, defaultPath: def, filters });
+  return r.canceled ? null : r.filePath;
 });
 ipcMain.handle('dialog:confirm', async (_e, { message, buttons }) => {
   const r = await dialog.showMessageBox(win, { type: 'question', message, buttons, cancelId: buttons.length - 1, defaultId: 0 });
@@ -113,6 +120,34 @@ ipcMain.handle('dialog:confirm', async (_e, { message, buttons }) => {
 });
 
 ipcMain.handle('fs:writeText', (_e, p, text) => { fs.writeFileSync(p, text, 'utf8'); return true; });
+ipcMain.handle('fs:writeBytes', (_e, p, data) => { fs.writeFileSync(p, Buffer.from(data)); return true; });
+// Copy a file into a folder without overwriting a different file of the same name
+ipcMain.handle('fs:copyInto', async (_e, src, dir) => {
+  fs.mkdirSync(dir, { recursive: true });
+  const { name, ext } = path.parse(src);
+  let dst = path.join(dir, name + ext);
+  for (let i = 2; fs.existsSync(dst); i++) {
+    if (fs.statSync(dst).size === fs.statSync(src).size) return dst;
+    dst = path.join(dir, `${name} (${i})${ext}`);
+  }
+  await fs.promises.copyFile(src, dst);
+  return dst;
+});
+// Look for files by name in a folder and its subfolders: { "name.mp4": "full path" }
+ipcMain.handle('fs:findFiles', (_e, dir, names) => {
+  const want = new Set(names.map((n) => n.toLowerCase())), found = {};
+  const walk = (d, depth) => {
+    let list = [];
+    try { list = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of list) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { if (depth < 8) walk(p, depth + 1); }
+      else if (want.has(e.name.toLowerCase()) && !found[e.name.toLowerCase()]) found[e.name.toLowerCase()] = p;
+    }
+  };
+  walk(dir, 0);
+  return found;
+});
 ipcMain.handle('fs:readText', (_e, p) => fs.readFileSync(p, 'utf8'));
 ipcMain.handle('fs:exists', (_e, p) => fs.existsSync(p));
 ipcMain.handle('fs:autosavePath', () => path.join(app.getPath('userData'), 'autosave.sklejka'));
@@ -156,8 +191,39 @@ ipcMain.handle('media:probe', async (_e, file) => {
   return { type, duration: type === 'image' ? 0 : duration, width, height, fps, hasAudio: !!a };
 });
 
+// Waveforms and filmstrips of hour-long recordings mean reading the whole multi-GB file. They are cached
+// on disk (keyed by path + size + mtime, like proxies), and run through small queues: ten parallel full
+// reads of one disk made each of them crawl.
+const MEDIA_CACHE = path.join(app.getPath('userData'), 'mediacache');
+function mediaCacheFile(file, tag) {
+  try {
+    const st = fs.statSync(file);
+    fs.mkdirSync(MEDIA_CACHE, { recursive: true });
+    return path.join(MEDIA_CACHE, require('crypto').createHash('sha1').update(file + '|' + st.size + '|' + st.mtimeMs).digest('hex').slice(0, 16) + tag);
+  } catch (_) { return null; }
+}
+// smallest job first: a song's waveform is ready in a second instead of waiting behind hour-long recordings
+function queue(n) {
+  let active = 0;
+  const waiting = [];
+  const next = () => { if (active < n && waiting.length) { active++; const { fn, res, rej } = waiting.shift(); fn().then(res, rej).finally(() => { active--; next(); }); } };
+  return (fn, size = 0) => new Promise((res, rej) => {
+    const i = waiting.findIndex((w) => w.size > size);
+    waiting.splice(i < 0 ? waiting.length : i, 0, { fn, res, rej, size });
+    next();
+  });
+}
+const fileSize = (f) => { try { return fs.statSync(f).size; } catch (_) { return 0; } };
+const peaksQueue = queue(2), thumbsQueue = queue(1);
 ipcMain.handle('media:peaks', async (_e, file) => {
   if (!FFMPEG) return null;
+  const cached = mediaCacheFile(file, '.peaks');
+  if (cached && fs.existsSync(cached)) return Array.from(fs.readFileSync(cached));
+  const peaks = await peaksQueue(() => computePeaks(file), fileSize(file));
+  if (cached && peaks) try { fs.writeFileSync(cached, Buffer.from(peaks)); } catch (_) {}
+  return peaks;
+});
+async function computePeaks(file) {
   const rate = 4000, per = 40; // 100 peaks per second
   const buf = await run(FFMPEG, ['-v', 'error', '-i', file, '-vn', '-ac', '1', '-ar', String(rate), '-f', 's16le', '-']);
   const n = Math.floor(buf.length / 2);
@@ -169,7 +235,7 @@ ipcMain.handle('media:peaks', async (_e, file) => {
     peaks[k] = Math.round((m / 32768) * 255);
   }
   return peaks;
-});
+}
 
 // ---------- Preview proxies ----------
 // Long-GOP recordings (OBS: B-frames, keyframe every few seconds) seek slowly and the decoder shows
@@ -215,13 +281,17 @@ app.on('before-quit', () => { for (const p of proxyProcs.values()) try { p.kill(
 // Filmstrip sprite for the timeline (keyframes only, fast)
 ipcMain.handle('media:thumbs', async (_e, file, duration) => {
   const count = Math.max(6, Math.min(60, Math.ceil(duration / 2)));
-  const out = path.join(TMP, 'th_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '.jpg');
+  const cached = mediaCacheFile(file, `.th${count}.jpg`);
+  if (cached && fs.existsSync(cached)) return { path: cached, count };
+  const out = cached || path.join(TMP, 'th_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '.jpg');
   const vf = `fps=${(count / Math.max(0.1, duration)).toFixed(5)},scale=-2:90,tile=${count}x1`;
-  try {
-    await run(FFMPEG, ['-y', '-v', 'error', '-skip_frame', 'nokey', '-i', file, '-an', '-vf', vf, '-frames:v', '1', '-q:v', '5', out]);
-  } catch (_) {
-    await run(FFMPEG, ['-y', '-v', 'error', '-i', file, '-an', '-vf', vf, '-frames:v', '1', '-q:v', '5', out]);
-  }
+  await thumbsQueue(async () => {
+    try {
+      await run(FFMPEG, ['-y', '-v', 'error', '-skip_frame', 'nokey', '-i', file, '-an', '-vf', vf, '-frames:v', '1', '-q:v', '5', out]);
+    } catch (_) {
+      await run(FFMPEG, ['-y', '-v', 'error', '-i', file, '-an', '-vf', vf, '-frames:v', '1', '-q:v', '5', out]);
+    }
+  }, fileSize(file));
   return { path: out, count };
 });
 
@@ -327,9 +397,10 @@ ipcMain.handle('media:reverse', async (_e, file, hasVideo) => {
   return out;
 });
 
-ipcMain.handle('media:extractAudio', async (_e, file) => {
-  const out = path.join(TMP, 'aud_' + Date.now() + '.m4a');
-  await run(FFMPEG, ['-y', '-v', 'error', '-i', file, '-vn', '-c:a', 'aac', '-b:a', '192k', out]);
+// lossless: voice recordings go to 24-bit WAV, so nothing is lost before the final export
+ipcMain.handle('media:extractAudio', async (_e, file, lossless) => {
+  const out = path.join(TMP, 'aud_' + Date.now() + (lossless ? '.wav' : '.m4a'));
+  await run(FFMPEG, ['-y', '-v', 'error', '-i', file, '-vn', ...(lossless ? ['-c:a', 'pcm_s24le'] : ['-c:a', 'aac', '-b:a', '192k']), out]);
   return out;
 });
 
@@ -374,7 +445,7 @@ function findYtDlp() {
 }
 let dlProc = null;
 ipcMain.handle('dl:url', async (_e, url) => {
-  const outDir = path.join(app.getPath('videos'), 'Склейка загрузки');
+  const outDir = path.join(app.getPath('videos'), 'CutByCut загрузки');
   fs.mkdirSync(outDir, { recursive: true });
   const ytdlp = findYtDlp();
   if (!ytdlp) {
@@ -417,7 +488,7 @@ ipcMain.handle('dl:cancel', () => { if (dlProc) try { dlProc.kill(); } catch (_)
 
 // ---------- Online catalog (open licenses only) ----------
 // Openverse: CC0 / CC BY sounds, music, images (no key). Pixabay / Pexels: free stock video (user's key).
-const UA = { 'User-Agent': 'Sklejka/1.4 (free video editor)' };
+const UA = { 'User-Agent': 'CutByCut/2.0 (free video editor)' };
 async function getJson(url, headers = {}, timeoutMs = 50000) {
   // Openverse is sometimes slow: time out and retry once
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -505,7 +576,7 @@ ipcMain.handle('online:search', async (_e, o) => {
   return { total: 0, items: [] };
 });
 ipcMain.handle('online:download', async (_e, { url, name, ext }) => {
-  const dir = path.join(app.getPath('videos'), 'Склейка загрузки', 'Онлайн');
+  const dir = path.join(app.getPath('videos'), 'CutByCut загрузки', 'Онлайн');
   fs.mkdirSync(dir, { recursive: true });
   const safe = (name || 'file').replace(/[\\/:*?"<>|\r\n]+/g, '_').slice(0, 80).trim() || 'file';
   const p = path.join(dir, `${safe}.${(ext || 'bin').replace(/[^a-z0-9]/gi, '')}`);
@@ -555,7 +626,7 @@ function dirSize(d) {
   try { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); total += f.isDirectory() ? dirSize(p) : fs.statSync(p).size; } } catch (_) {}
   return total;
 }
-ipcMain.handle('storage:info', () => ({ proxies: dirSize(path.join(app.getPath('userData'), 'proxies')), temp: dirSize(TMP), versions: dirSize(path.join(app.getPath('userData'), 'versions')), downloads: dirSize(path.join(app.getPath('videos'), 'Склейка загрузки')) }));
+ipcMain.handle('storage:info', () => ({ proxies: dirSize(path.join(app.getPath('userData'), 'proxies')), temp: dirSize(TMP), versions: dirSize(path.join(app.getPath('userData'), 'versions')), downloads: dirSize(path.join(app.getPath('videos'), 'CutByCut загрузки')) }));
 ipcMain.handle('storage:clear', (_e, what) => {
   const target = what === 'proxies' ? path.join(app.getPath('userData'), 'proxies') : what === 'temp' ? TMP : null;
   if (!target) return false;
@@ -644,7 +715,7 @@ ipcMain.handle('bg:check', async () => {
 let bgProc = null;
 ipcMain.handle('bg:remove', async (_e, o) => {
   const isImg = o.type === 'image';
-  const outDir = path.join(app.getPath('videos'), 'Склейка загрузки');
+  const outDir = path.join(app.getPath('videos'), 'CutByCut загрузки');
   fs.mkdirSync(outDir, { recursive: true });
   const stem = path.basename(o.file).replace(/\.[^.]+$/, '') + '_нет_фона_' + Date.now().toString(36);
   const send = (p, msg) => win.webContents.send('bg:progress', { p, msg });
@@ -751,13 +822,33 @@ function audioGraph(items, duration, firstInput) {
 // clips are laid out back-to-back per lane with silence in the gaps, then the few lanes are mixed.
 // Unlike one giant filter graph this works for any number of clips (Windows limits a command line
 // to 32 767 characters, which a 400-clip montage exceeded).
-async function renderAudioMix(items, duration, onStatus) {
+// opt.speech: 16 kHz mono 16-bit — enough for recognition and ~12x less data than the export mix
+// (an hour of studio-format audio is 1.4 GB per intermediate file). opt.job: { cancelled, procs } for "Stop".
+async function renderAudioMix(items, duration, onStatus, opt = {}) {
   const dir = path.join(TMP, 'mix_' + Date.now());
   fs.mkdirSync(dir, { recursive: true });
-  const SR = 48000;
-  const fmt = ['-c:a', 'pcm_f32le', '-ar', String(SR), '-ac', '2'];
+  const SR = opt.speech ? 16000 : 48000;
+  const fmt = opt.speech ? ['-c:a', 'pcm_s16le', '-ar', String(SR), '-ac', '1'] : ['-c:a', 'pcm_f32le', '-ar', String(SR), '-ac', '2'];
+  const layout = opt.speech ? 'mono' : 'stereo';
+  const job = opt.job || {};
+  const check = () => { if (job.cancelled) throw new Error('остановлено'); };
+  // ffmpeg with -progress: reports how far inside one long clip it is
+  const runP = (args, len, label) => new Promise((resolve, reject) => {
+    const p = spawn(FFMPEG, ['-progress', 'pipe:1', '-nostats', ...args], { windowsHide: true });
+    (job.procs = job.procs || new Set()).add(p);
+    let err = '', last = 0;
+    p.stdout.on('data', (d) => {
+      const m = /out_time_us=(\d+)/.exec(d.toString());
+      const now = Date.now();
+      if (m && onStatus && len > 20 && now - last > 700) { last = now; onStatus(`${label} ${Math.min(99, Math.round((+m[1] / 1e6 / len) * 100))}%`); }
+    });
+    p.stderr.on('data', (d) => { err += d.toString(); });
+    p.on('error', reject);
+    p.on('close', (c) => { job.procs.delete(p); if (job.cancelled) reject(new Error('остановлено')); else if (c === 0) resolve(); else reject(new Error(err.slice(-600) || 'ffmpeg ' + c)); });
+  });
   const silence = path.join(dir, 'silence.wav');
-  await run(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-t', Math.max(0.1, duration + 1).toFixed(3), '-i', `anullsrc=r=${SR}:cl=stereo`, ...fmt, silence]);
+  await run(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-t', Math.max(0.1, duration + 1).toFixed(3), '-i', `anullsrc=r=${SR}:cl=${layout}`, ...fmt, silence]);
+  check();
   if (!items.length) return silence;
   // lanes: non-overlapping runs of clips, keeping clips of the same track together when possible
   const sorted = items.map((a, i) => ({ ...a, i, len: (a.srcOut - a.srcIn) / a.speed })).sort((a, b) => a.start - b.start);
@@ -770,12 +861,13 @@ async function renderAudioMix(items, duration, onStatus) {
   // cut every clip to its exact length (4 at a time)
   let done = 0, next = 0;
   const cut = async (a) => {
-    const ch = [...atempoChain(a.speed), `aformat=sample_rates=${SR}:channel_layouts=stereo`, `volume=${a.volume.toFixed(3)}`];
+    check();
+    const ch = [...atempoChain(a.speed), `aformat=sample_rates=${SR}:channel_layouts=${layout}`, `volume=${a.volume.toFixed(3)}`];
     if (a.fadeIn > 0) ch.push(`afade=t=in:st=0:d=${a.fadeIn.toFixed(3)}`);
     if (a.fadeOut > 0) ch.push(`afade=t=out:st=${Math.max(0, a.len - a.fadeOut).toFixed(3)}:d=${a.fadeOut.toFixed(3)}`);
     ch.push('apad', `atrim=end_sample=${Math.round(a.len * SR)}`);
     a.file = path.join(dir, `seg_${a.i}.wav`);
-    await run(FFMPEG, ['-y', '-v', 'error', '-ss', a.srcIn.toFixed(4), '-t', (a.srcOut - a.srcIn + 0.05).toFixed(4), '-i', a.path, '-vn', '-af', ch.join(','), ...fmt, a.file]);
+    await runP(['-y', '-v', 'error', '-ss', a.srcIn.toFixed(4), '-t', (a.srcOut - a.srcIn + 0.05).toFixed(4), '-i', a.path, '-vn', '-af', ch.join(','), ...fmt, a.file], a.len, `Сведение звука: фрагмент ${done + 1} из ${sorted.length},`);
     done++;
     if (onStatus) onStatus(`Сведение звука: ${done} из ${sorted.length}`);
   };
@@ -794,7 +886,8 @@ async function renderAudioMix(items, duration, onStatus) {
     const list = path.join(dir, `lane_${li}.txt`);
     fs.writeFileSync(list, lines.join('\n'), 'utf8');
     const out = path.join(dir, `lane_${li}.wav`);
-    await run(FFMPEG, ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, ...fmt, out]);
+    check();
+    await runP(['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', list, ...fmt, out], lanes[li].end, `Сведение дорожки ${li + 1} из ${lanes.length}:`);
     laneFiles.push(out);
   }
   if (onStatus) onStatus('Сведение дорожек…');
@@ -803,30 +896,131 @@ async function renderAudioMix(items, duration, onStatus) {
   const graph = laneFiles.length > 1
     ? `${laneFiles.map((_, i) => `[${i}:a]`).join('')}amix=inputs=${laneFiles.length}:normalize=0:dropout_transition=0,apad,atrim=0:${duration.toFixed(4)}[aout]`
     : `[0:a]apad,atrim=0:${duration.toFixed(4)}[aout]`;
-  await run(FFMPEG, ['-y', '-v', 'error', ...ins, '-filter_complex', graph, '-map', '[aout]', ...fmt, mix]);
+  check();
+  await runP(['-y', '-v', 'error', ...ins, '-filter_complex', graph, '-map', '[aout]', ...fmt, mix], duration, 'Сведение дорожек:');
   for (const f of fs.readdirSync(dir)) if (f !== 'mix.wav') try { fs.unlinkSync(path.join(dir, f)); } catch (_) {}
   return mix;
 }
 
 // ---------- Auto captions (local Whisper) ----------
-ipcMain.handle('captions:whisper', async (_e, { audio, duration, language, model }) => {
+// Whisper prints "[mm:ss.mmm --> mm:ss.mmm] text" per segment; the end time of the last one
+// against the audio length gives the progress.
+const whisperTime = (s) => s.split(':').reduce((a, v) => a * 60 + parseFloat(v), 0);
+const whisperJobs = new Map(); // sender id -> job, so "Stop" can kill ffmpeg and Whisper
+ipcMain.handle('captions:cancel', (e) => {
+  const job = whisperJobs.get(e.sender.id);
+  if (!job) return false;
+  job.cancelled = true;
+  for (const p of job.procs || []) try { p.kill(); } catch (_) {}
+  return true;
+});
+ipcMain.handle('captions:whisper', async (e, { audio, duration, language, model, prompt }) => {
+  const job = { cancelled: false, procs: new Set() };
+  whisperJobs.set(e.sender.id, job);
+  try { return await whisperRun(e, job, { audio, duration, language, model, prompt }); }
+  finally { if (whisperJobs.get(e.sender.id) === job) whisperJobs.delete(e.sender.id); }
+});
+async function whisperRun(e, job, { audio, duration, language, model, prompt }) {
+  const send = (p) => { if (!e.sender.isDestroyed()) e.sender.send('captions:progress', { duration, ...p }); };
   const outDir = path.join(TMP, 'whisper_' + Date.now());
   fs.mkdirSync(outDir, { recursive: true });
   const wav = path.join(outDir, 'in.wav');
-  const mix = await renderAudioMix(audio, duration);
-  await run(FFMPEG, ['-y', '-v', 'error', '-i', mix, '-ac', '1', '-ar', '16000', wav]);
-  const args = ['-m', 'whisper', wav, '--model', model || 'small', '--output_format', 'json', '--output_dir', outDir, '--fp16', 'False', '--word_timestamps', 'True'];
+  const total = audio.length;
+  send({ stage: 'mix', done: 0, total });
+  const mix = await renderAudioMix(audio, duration, (s) => {
+    const m = /фрагмент (\d+) из (\d+),? ?(\d+)?%?/.exec(s) || /(\d+) из (\d+)/.exec(s);
+    const pct = /(\d+)%/.exec(s);
+    if (/Сведение звука/.test(s) && m) send({ stage: 'mix', done: +m[1] - (pct ? 1 - +pct[1] / 100 : 0), total: +m[2], text: s });
+    else send({ stage: 'lanes', text: s });
+  }, { speech: true, job });
+  fs.renameSync(mix, wav); // already 16 kHz mono
+  send({ stage: 'model' });
+  const args = ['-m', 'whisper', wav, '--model', model || 'small', '--output_format', 'json', '--output_dir', outDir, '--fp16', 'False', '--word_timestamps', 'True', '--verbose', 'True'];
   if (language && language !== 'auto') args.push('--language', language);
+  // names and English words the user wants spelled exactly (Whisper takes them as preceding context)
+  if (prompt) args.push('--initial_prompt', prompt);
   await new Promise((resolve, reject) => {
-    const p = spawn('python', args, { windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
-    let err = '';
-    p.stdout.on('data', (d) => win.webContents.send('captions:log', d.toString()));
-    p.stderr.on('data', (d) => { err += d.toString(); win.webContents.send('captions:log', d.toString()); });
+    if (job.cancelled) { reject(new Error('остановлено')); return; }
+    const p = spawn('python', args, { windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' } });
+    job.procs.add(p);
+    let err = '', buf = '';
+    p.stdout.on('data', (d) => {
+      const s = d.toString();
+      win.webContents.send('captions:log', s);
+      buf += s;
+      const lines = buf.split(/\r?\n/);
+      buf = lines.pop();
+      for (const l of lines) {
+        const m = /^\[([\d:.]+) --> ([\d:.]+)\]\s*(.*)$/.exec(l.trim());
+        if (m) send({ stage: 'listen', at: whisperTime(m[2]), text: m[3] });
+        else if (/^Detected language/i.test(l)) send({ stage: 'listen', at: 0, text: l.trim() });
+      }
+    });
+    p.stderr.on('data', (d) => {
+      const s = d.toString();
+      err += s;
+      win.webContents.send('captions:log', s);
+      const m = /(\d+)%\|/.exec(s); // first run downloads the model
+      if (m) send({ stage: 'download', pct: +m[1] });
+    });
     p.on('error', reject);
-    p.on('close', (c) => (c === 0 ? resolve() : reject(new Error(err.slice(-1200)))));
+    p.on('close', (c) => (job.cancelled ? reject(new Error('остановлено')) : c === 0 ? resolve() : reject(new Error(err.slice(-1200)))));
   });
   const j = JSON.parse(fs.readFileSync(path.join(outDir, 'in.json'), 'utf8'));
   return (j.segments || []).map((s) => ({ start: s.start, end: s.end, text: s.text.trim(), words: (s.words || []).map((w) => ({ start: w.start, end: w.end, word: w.word })) }));
+}
+
+// ---------- Voice input for the assistant: a Whisper process that stays loaded ----------
+let voice = null; // { proc, pending: Map, ready: Promise, idle }
+function voiceWorker() {
+  if (voice) { clearTimeout(voice.idle); voice.idle = setTimeout(voiceStop, 10 * 60 * 1000); return voice; }
+  const proc = spawn('python', [path.join(__dirname, 'tools', 'whisper_worker.py')], { windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' } });
+  const v = { proc, pending: new Map(), seq: 0, err: '' };
+  let buf = '', readyOk;
+  v.ready = new Promise((res, rej) => { readyOk = res; v.readyFail = rej; });
+  v.ready.catch(() => {}); // a worker that dies before anyone asked is not an error by itself
+  proc.stdout.setEncoding('utf8');
+  proc.stdout.on('data', (d) => {
+    buf += d;
+    const lines = buf.split(/\r?\n/);
+    buf = lines.pop();
+    for (const l of lines) {
+      let j; try { j = JSON.parse(l); } catch (_) { continue; }
+      if (j.ready) { readyOk(); continue; }
+      const p = v.pending.get(j.id);
+      if (!p) continue;
+      v.pending.delete(j.id);
+      if (j.error) p.reject(new Error(j.error)); else p.resolve(j);
+    }
+  });
+  proc.stderr.on('data', (d) => { v.err = (v.err + d.toString()).slice(-2000); });
+  const fail = (e) => { v.readyFail(e); for (const p of v.pending.values()) p.reject(e); v.pending.clear(); if (voice === v) voice = null; };
+  proc.on('error', fail);
+  proc.on('close', () => fail(new Error('распознавание остановилось: ' + (v.err.trim().split('\n').pop() || 'нет Python/Whisper'))));
+  voice = v;
+  v.idle = setTimeout(voiceStop, 10 * 60 * 1000); // free the memory when voice input is not used
+  return v;
+}
+function voiceStop() { if (voice) { try { voice.proc.kill(); } catch (_) {} voice = null; } }
+app.on('before-quit', voiceStop);
+async function voiceAsk(req) {
+  const v = voiceWorker();
+  await v.ready;
+  const id = ++v.seq;
+  return new Promise((resolve, reject) => { v.pending.set(id, { resolve, reject }); v.proc.stdin.write(JSON.stringify({ id, ...req }) + '\n'); });
+}
+// opened the assistant panel: start loading the model so the first phrase is quick
+ipcMain.handle('voice:warm', async (_e, model) => { await voiceAsk({ warm: true, model }); return true; });
+ipcMain.handle('voice:transcribe', async (_e, { data, model, language, prompt }) => {
+  const dir = path.join(TMP, 'voice');
+  fs.mkdirSync(dir, { recursive: true });
+  const src = path.join(dir, 'in_' + Date.now() + '.webm'), wav = src.replace(/\.webm$/, '.wav');
+  fs.writeFileSync(src, Buffer.from(data));
+  try {
+    await run(FFMPEG, ['-y', '-v', 'error', '-i', src, '-ac', '1', '-ar', '16000', wav]);
+    const r = await voiceAsk({ wav, model, language, prompt });
+    return r.text || '';
+  } finally { for (const f of [src, wav]) try { fs.unlinkSync(f); } catch (_) {} }
 });
 
 // ---------- AI assistant (Claude Code CLI) ----------
@@ -874,24 +1068,44 @@ ipcMain.handle('ai:saveFile', (_e, name, data) => {
   fs.writeFileSync(p, Buffer.from(data));
   return p;
 });
-ipcMain.handle('ai:ask', async (_e, { prompt, model }) => {
+ipcMain.handle('ai:ask', async (e, { prompt, model }) => {
   const exe = findClaude();
   if (!exe) throw new Error('Claude Code не найден. Установите приложение Claude (claude.ai/download) и войдите в аккаунт.');
   const cwd = AI_DIR;
   fs.mkdirSync(cwd, { recursive: true });
-  // Read is allowed so Claude can look at the storyboard images saved in its working folder
-  const args = ['-p', '--output-format', 'json', '--model', model || 'claude-sonnet-5-5', '--max-turns', '6', '--allowedTools', 'Read', '--disallowedTools', 'Bash,Edit,Write,Glob,Grep,WebFetch,WebSearch,Agent,NotebookEdit'];
+  // Read is allowed so Claude can look at the storyboard images saved in its working folder.
+  // stream-json reports every step (which image it opens, its thoughts) while it works;
+  // the last line is the same result object the plain json format gives.
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', model || 'claude-sonnet-5-5', '--max-turns', '6', '--allowedTools', 'Read', '--disallowedTools', 'Bash,Edit,Write,Glob,Grep,WebFetch,WebSearch,Agent,NotebookEdit'];
+  const send = (p) => { if (!e.sender.isDestroyed()) e.sender.send('ai:progress', p); };
+  const onEvent = (ev) => {
+    if (ev.type !== 'assistant' || !ev.message || !Array.isArray(ev.message.content)) return;
+    for (const c of ev.message.content) {
+      if (c.type === 'tool_use') send({ kind: 'read', file: path.basename(String((c.input && (c.input.file_path || c.input.path)) || c.name)) });
+      else if (c.type === 'text' && c.text.trim()) send({ kind: 'text', text: c.text.trim() });
+      else if (c.type === 'thinking') send({ kind: 'thinking' });
+    }
+  };
   return new Promise((resolve, reject) => {
     const p = spawn(exe, args, { cwd, windowsHide: true, env: { ...process.env } });
     aiProc = p;
-    let out = '', err = '';
-    p.stdout.on('data', (d) => { out += d.toString('utf8'); });
+    let out = '', err = '', buf = '';
+    p.stdout.setEncoding('utf8'); // keeps Cyrillic letters split across chunks intact
+    p.stdout.on('data', (d) => {
+      const s = d.toString();
+      out += s; buf += s;
+      const lines = buf.split(/\r?\n/);
+      buf = lines.pop();
+      for (const l of lines) if (l.trim()) try { onEvent(JSON.parse(l)); } catch (_) {}
+    });
     p.stderr.on('data', (d) => { err += d.toString('utf8'); });
     p.on('error', reject);
     p.on('close', () => {
       aiProc = null;
       try {
-        const j = JSON.parse(out.trim().split(/\r?\n/).filter(Boolean).pop());
+        // the result line is not always the last one (status lines may follow it)
+        const lines = out.trim().split(/\r?\n/).filter(Boolean).reverse();
+        const j = lines.map((l) => { try { return JSON.parse(l); } catch (_) { return null; } }).find((x) => x && x.type === 'result') || JSON.parse(lines[0]);
         if (j.is_error) reject(new Error(j.result || 'ошибка Claude'));
         else resolve(j.result || '');
       } catch (_) { reject(new Error((err || out).slice(-800) || 'нет ответа')); }
@@ -905,7 +1119,9 @@ ipcMain.handle('ai:cancel', () => { if (aiProc) { try { aiProc.kill(); } catch (
 ipcMain.handle('ai:login', () => {
   const exe = findClaude();
   if (!exe) throw new Error('Claude Code не найден');
-  spawn('cmd.exe', ['/c', 'start', '"Claude — вход"', 'cmd.exe', '/k', `echo Наберите /login и нажмите Enter, затем войдите в браузере. После входа закройте это окно. && "${exe}"`], { cwd: AI_DIR, detached: true, windowsHide: false, shell: false }).unref();
+  fs.mkdirSync(AI_DIR, { recursive: true });
+  // verbatim arguments: Node must not re-quote the window title for cmd's "start"
+  spawn('cmd.exe', ['/c', `start "Claude login" /D "${AI_DIR}" "${exe}"`], { detached: true, windowsHide: false, windowsVerbatimArguments: true }).unref();
   return true;
 });
 
@@ -935,6 +1151,25 @@ async function videoCodecArgs(o) {
   if (enc.endsWith('_qsv')) return ['-c:v', enc, '-global_quality', String(q), ...(hevc ? ['-tag:v', 'hvc1'] : [])];
   return [...(hevc ? ['-c:v', 'libx265', '-tag:v', 'hvc1'] : ['-c:v', 'libx264']), '-preset', o.speed || 'medium', '-crf', String(q)];
 }
+
+// Audio editor: the timeline's mix straight into a sound file
+const AUDIO_CODECS = { mp3: ['-c:a', 'libmp3lame'], wav: ['-c:a', 'pcm_s16le'], flac: ['-c:a', 'flac'], ogg: ['-c:a', 'libvorbis'], m4a: ['-c:a', 'aac', '-movflags', '+faststart'] };
+ipcMain.handle('audio:export', async (e, o) => {
+  if (!FFMPEG) throw new Error('FFmpeg не найден. Установите: winget install Gyan.FFmpeg');
+  const mix = await renderAudioMix(o.items, o.duration, (msg) => { try { e.sender.send('export:status', msg); } catch (_) {} });
+  const args = ['-y', '-v', 'error', '-i', mix, '-t', o.duration.toFixed(4)];
+  if (o.loudnorm) args.push('-af', 'loudnorm=I=-16:TP=-1.5:LRA=11', '-ar', '48000');
+  args.push(...(AUDIO_CODECS[o.format] || AUDIO_CODECS.mp3));
+  if (o.bitrate && ['mp3', 'ogg', 'm4a'].includes(o.format)) args.push('-b:a', o.bitrate + 'k');
+  args.push(o.path);
+  await new Promise((res, rej) => {
+    const p = spawn(FFMPEG, args, { windowsHide: true });
+    let err = '';
+    p.stderr.on('data', (d) => { err = (err + d).slice(-1500); });
+    p.on('close', (code) => (code === 0 ? res() : rej(new Error(err || 'ffmpeg: код ' + code))));
+  });
+  return o.path;
+});
 
 ipcMain.handle('export:start', async (_e, o) => {
   if (!FFMPEG) throw new Error('FFmpeg не найден. Установите: winget install Gyan.FFmpeg');

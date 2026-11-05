@@ -17,11 +17,11 @@ const INSP = {
     if (c.type === 'sticker') tabs.push(['sticker', 'Стикер']);
     if (c.type === 'gen') tabs.push(['gen', 'Футаж']);
     if (c.type === 'video' || c.type === 'image') tabs.push(['video', c.type === 'video' ? 'Видео' : 'Фото']);
-    if (isVisual(c)) tabs.push(['anim', 'Анимация']);
+    if (isVisual(c) && S.mode !== 'photo') tabs.push(['anim', 'Анимация']);
     if (c.type === 'video' || c.type === 'audio') tabs.push(['audio', 'Аудио'], ['speed', 'Скорость']);
     if (c.type === 'video' || c.type === 'image') tabs.push(['adjust', 'Коррекция'], ['mask', 'Маска']);
     if (isVisual(c)) tabs.push(['clipfx', 'Эффекты']);
-    if ((c.type === 'video' || c.type === 'image') && prevOnTrack(c)) tabs.push(['transition', 'Переход']);
+    if ((c.type === 'video' || c.type === 'image') && prevOnTrack(c) && S.mode !== 'photo') tabs.push(['transition', 'Переход']);
     if (c.type === 'fx') tabs.push(['fx', 'Эффект']);
     if (c.type === 'filter') tabs.push(['filter', 'Фильтр']);
     if (c.type === 'adjust') tabs.push(['adjust', 'Коррекция']);
@@ -96,8 +96,11 @@ const INSP = {
   // ----- tabs -----
   project(box) {
     const pr = P();
+    if (S.mode === 'audio') { box.append(h('div', { class: 'empty' }, 'Выделите клип на дорожке: здесь появятся громкость, затухания и скорость.')); return; }
+    if (S.mode === 'photo') { box.append(h('div', { class: 'empty' }, 'Выделите слой: здесь появятся положение, цвет, маска и кадрирование. Размер и фон — во вкладке «Холст».')); return; }
     const s = this.sec(box, 'Холст');
-    this.select(s, 'Формат', RATIOS.map((r) => [r.id, r.label]), () => pr.ratio, (v) => setRatio(v));
+    s.append(canvasSizeRow());
+    this.select(s, 'Формат', [...RATIOS.map((r) => [r.id, r.label]), ...(pr.ratio === 'custom' ? [['custom', 'Свой размер']] : [])], () => pr.ratio, (v) => setRatio(v));
     this.select(s, 'Кадров/с', [[24, '24'], [25, '25'], [30, '30'], [50, '50'], [60, '60']].map(([a, b]) => [String(a), b]), () => String(pr.fps), (v) => { pr.fps = +v; });
     const pv = this.sec(box, 'Превью');
     this.toggle(pv, 'Прокси (плавно)', () => S.useProxy !== false, (v) => { S.useProxy = v; });
@@ -167,10 +170,17 @@ const INSP = {
 
   text(box, c) {
     const tx = c.text;
+    const host = c.link && clipById(c.link);
+    if (host) {
+      const others = P().clips.filter((x) => x.link === c.link);
+      box.append(h('div', { class: 'note', style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+        h('span', { style: { flex: 1 } }, `🔗 Двигается вместе с «${clipName(host)}» (субтитров: ${others.length})`),
+        h('button', { onclick: () => change(() => { for (const x of others) { delete x.link; delete x.linkAt; } }) }, 'Отвязать')));
+    }
     const s = this.sec(box, 'Текст');
     const ta = h('textarea', {}, tx.text);
     ta.addEventListener('input', () => { beginEdit(); tx.text = ta.value; requestRender(); });
-    ta.addEventListener('change', () => { endEdit(); TL.render(); });
+    ta.addEventListener('change', () => { if (typeof retimeWords === 'function') retimeWords(c); endEdit(); TL.render(); });
     s.append(ta);
     s.append(h('div', { class: 'btnRow', style: { marginTop: '6px' } }, h('button', { onclick: () => saveTextPreset(c) }, '💾 Сохранить стиль')));
     const f = this.sec(box, 'Шрифт');
@@ -294,13 +304,28 @@ const INSP = {
   },
 
   mask(box, c) {
+    // older projects store only type/size/feather/invert
+    for (const [k, v] of Object.entries(MASK_DEFAULT)) if (c.mask[k] == null) c.mask[k] = v;
     const mk = c.mask;
-    const s = this.sec(box, 'Маска');
-    this.grid(s, [{ id: 'none', name: 'Нет' }, { id: 'circle', name: 'Круг' }, { id: 'rect', name: 'Прямоугольник' }, { id: 'heart', name: 'Сердце' }, { id: 'band', name: 'Полоса' }], () => mk.type, (v) => { mk.type = v; });
-    if (mk.type !== 'none') {
-      this.slider(s, 'Размер', () => mk.size, (v) => { mk.size = v; }, 5, 200, 1, { mul: 100 });
-      this.toggle(s, 'Инвертировать', () => mk.invert, (v) => { mk.invert = v; });
-    }
+    const ps = this.sec(box, 'Готовые маски');
+    const pg = h('div', { class: 'grid small', style: { marginBottom: '8px' } });
+    for (const pr of MASK_PRESETS) pg.append(h('div', { class: 'chip', style: { textAlign: 'center', margin: 0 }, onclick: () => { pushUndo(); Object.assign(mk, MASK_DEFAULT, pr.m); afterChange(); } }, pr.name));
+    ps.append(pg);
+    const s = this.sec(box, 'Маска', mk.type !== 'none' ? h('button', { onclick: () => { pushUndo(); Object.assign(mk, MASK_DEFAULT); afterChange(); } }, 'Убрать') : null);
+    this.grid(s, MASK_SHAPES, () => mk.type, (v) => { mk.type = v; });
+    if (mk.type === 'none') return;
+    this.select(s, 'Режим', MASK_MODES, () => mk.mode, (v) => { mk.mode = v; });
+    if (mk.mode === 'darken') this.color(s, 'Цвет', () => mk.color, (v) => { mk.color = v; });
+    if (mk.mode !== 'cut') this.slider(s, mk.mode === 'darken' ? 'Затемнение' : 'Сила', () => mk.strength, (v) => { mk.strength = v; }, 0, 100, 1, { mul: 100, def: 0.7 });
+    if (!['linear', 'split'].includes(mk.type)) this.slider(s, 'Размер', () => mk.size, (v) => { mk.size = v; }, 5, 300, 1, { mul: 100, def: 0.8 });
+    this.slider(s, 'Мягкость края', () => mk.feather, (v) => { mk.feather = v; }, 0, 100, 1, { mul: 100, def: 0.05 });
+    if (!['band', 'vband', 'split', 'linear'].includes(mk.type)) this.slider(s, 'Ширина / высота', () => mk.aspect, (v) => { mk.aspect = v; }, 20, 400, 1, { mul: 100, def: 1 });
+    if (mk.type === 'round') this.slider(s, 'Скругление', () => mk.round, (v) => { mk.round = v; }, 0, 100, 1, { mul: 100, def: 0.25 });
+    const p = this.sec(box, 'Положение маски', h('button', { onclick: () => { pushUndo(); Object.assign(mk, { x: 0, y: 0, rot: 0 }); afterChange(); } }, 'Сброс'));
+    this.slider(p, 'По горизонтали', () => mk.x, (v) => { mk.x = v; }, -100, 100, 1, { mul: 100, def: 0 });
+    this.slider(p, 'По вертикали', () => mk.y, (v) => { mk.y = v; }, -100, 100, 1, { mul: 100, def: 0 });
+    this.slider(p, 'Поворот', () => mk.rot, (v) => { mk.rot = v; }, -180, 180, 1, { def: 0 });
+    this.toggle(p, 'Инвертировать', () => mk.invert, (v) => { mk.invert = v; });
   },
 
   clipfx(box, c) {
@@ -311,6 +336,7 @@ const INSP = {
       const w = h('div', { class: 'sec', style: { background: 'var(--bg2)', padding: '8px', borderRadius: '8px' } });
       this.select(w, 'Эффект', EFFECTS.map((e) => [e.id, e.name]), () => fx.id, (v) => { fx.id = v; });
       this.slider(w, 'Сила', () => fx.amt, (v) => { fx.amt = v; }, 0, 100, 1, { mul: 100 });
+      this.fxOptions(w, fx);
       w.append(h('button', { onclick: () => change(() => c.fxList.splice(i, 1)) }, 'Удалить'));
       s.append(w);
     });
@@ -333,7 +359,28 @@ const INSP = {
     const s = this.sec(box, 'Эффект');
     this.select(s, 'Эффект', EFFECTS.map((e) => [e.id, `${e.cat}: ${e.name}`]), () => c.fx.id, (v) => { c.fx.id = v; });
     this.slider(s, 'Сила', () => c.fx.amt, (v) => { c.fx.amt = v; }, 0, 100, 1, { mul: 100 });
+    this.fxOptions(s, c.fx);
     s.append(h('div', { class: 'note' }, 'Эффект на дорожке эффектов действует на все видео ниже него. Растяните клип эффекта за края, чтобы изменить время действия.'));
+  },
+  // settings that only some effects have
+  fxOptions(s, fx) {
+    if (fx.id !== 'spotlight') return;
+    for (const [k, v] of Object.entries(SPOT_DEFAULT)) if (fx[k] == null) fx[k] = v;
+    this.seg(s, 'Куда светит', [['auto', 'Блуждает'], ['point', 'В точку'], ['pan', 'Из точки в точку']], () => fx.spotMode, (v) => { fx.spotMode = v; });
+    const one = fx.spotMode === 'pan' ? ' (начало)' : fx.spotMode === 'auto' ? ' (центр блуждания)' : '';
+    this.slider(s, 'Влево ↔ вправо' + one, () => fx.sx, (v) => { fx.sx = v; }, -100, 100, 1, { mul: 100, def: 0 });
+    this.slider(s, 'Вверх ↕ вниз' + one, () => fx.sy, (v) => { fx.sy = v; }, -100, 100, 1, { mul: 100, def: 0 });
+    if (fx.spotMode === 'pan') {
+      this.slider(s, 'Влево ↔ вправо (конец)', () => fx.sx2, (v) => { fx.sx2 = v; }, -100, 100, 1, { mul: 100, def: 0.5 });
+      this.slider(s, 'Вверх ↕ вниз (конец)', () => fx.sy2, (v) => { fx.sy2 = v; }, -100, 100, 1, { mul: 100, def: 0 });
+    }
+    if (fx.spotMode === 'auto') {
+      this.slider(s, 'Скорость', () => fx.speed, (v) => { fx.speed = v; }, 0, 400, 1, { mul: 100, def: 1 });
+      this.slider(s, 'Размах', () => fx.range, (v) => { fx.range = v; }, 0, 200, 1, { mul: 100, def: 1 });
+    }
+    this.slider(s, 'Размер луча', () => fx.size, (v) => { fx.size = v; }, 20, 300, 1, { mul: 100, def: 1 });
+    this.slider(s, 'Мягкость края', () => fx.soft, (v) => { fx.soft = v; }, 2, 100, 1, { mul: 100, def: 0.73 });
+    s.append(h('div', { class: 'note' }, fx.spotMode === 'pan' ? 'Alt + щелчок или перетаскивание по превью ставит начальную точку, Alt + Shift — конечную.' : 'Alt + щелчок или перетаскивание по превью — луч встанет в эту точку (режим «В точку»).'));
   },
   filter(box, c) {
     const s = this.sec(box, 'Фильтр');

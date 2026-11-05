@@ -4,7 +4,7 @@ window.GUIDE_EN = [
   "id": "start",
   "icon": "🚀",
   "title": "Getting Started",
-  "html": "\n<p><b>Sklejka</b> is a free video editor: trimming, text, effects, transitions, subtitles, an AI assistant and MP4 export.</p>\n<ol>\n<li><b>Import.</b> Drag videos, photos or music into the window (or go to the \"Media\" tab → \"Import\").</li>\n<li><b>To the timeline.</b> Click \"+\" on a file's tile or drag it onto the track at the bottom. The first video sets the canvas format (16:9, 9:16…).</li>\n<li><b>Editing.</b> Position the playhead (the white line) and cut with the <kbd>S</kbd> or <kbd>Ctrl+B</kbd> key, then delete the unwanted parts with <kbd>Del</kbd>.</li>\n<li><b>Enhancements.</b> On the left are text, stickers, footage, effects, transitions and filters. On the right are the properties of the selected clip.</li>\n<li><b>Export.</b> The \"⇪ Export\" button at the top right.</li>\n</ol>\n<p>Save the project with <kbd>Ctrl+S</kbd> to a <code>.sklejka</code> file; there are also autosave and version history.</p>"
+  "html": "\n<p><b>CutByCut</b> is a free video editor: trimming, text, effects, transitions, subtitles, an AI assistant and MP4 export.</p>\n<ol>\n<li><b>Import.</b> Drag videos, photos or music into the window (or go to the \"Media\" tab → \"Import\").</li>\n<li><b>To the timeline.</b> Click \"+\" on a file's tile or drag it onto the track at the bottom. The first video sets the canvas format (16:9, 9:16…).</li>\n<li><b>Editing.</b> Position the playhead (the white line) and cut with the <kbd>S</kbd> or <kbd>Ctrl+B</kbd> key, then delete the unwanted parts with <kbd>Del</kbd>.</li>\n<li><b>Enhancements.</b> On the left are text, stickers, footage, effects, transitions and filters. On the right are the properties of the selected clip.</li>\n<li><b>Export.</b> The \"⇪ Export\" button at the top right.</li>\n</ol>\n<p>Save the project with <kbd>Ctrl+S</kbd> to a <code>.sklejka</code> file; there are also autosave and version history.</p>"
  },
  {
   "id": "ui",
@@ -16,7 +16,7 @@ window.GUIDE_EN = [
   "id": "import",
   "icon": "📥",
   "title": "Import, Clipboard and Links",
-  "html": "\n<ul>\n<li><b>Files:</b> MP4, MOV, MKV, WEBM, AVI, MP3, WAV, M4A, PNG, JPG, GIF and more.</li>\n<li><b>Clipboard:</b> copy an image (or a file in Explorer) and press <kbd>Ctrl+V</kbd> — it will be placed on the timeline at the playhead position.</li>\n<li><b>By link:</b> paste a YouTube, TikTok or VK link, or a direct file link, into the field on the \"Media\" tab and click ⇩. Files are saved to \"Videos\\Sklejka downloads\".</li>\n<li><b>Proxy:</b> for long and 60 fps recordings, a lightweight copy is created in the background for smooth preview (the ⚡ icon on the tile). Export is always made from the original.</li>\n</ul>"
+  "html": "\n<ul>\n<li><b>Files:</b> MP4, MOV, MKV, WEBM, AVI, MP3, WAV, M4A, PNG, JPG, GIF and more.</li>\n<li><b>Clipboard:</b> copy an image (or a file in Explorer) and press <kbd>Ctrl+V</kbd> — it will be placed on the timeline at the playhead position.</li>\n<li><b>By link:</b> paste a YouTube, TikTok or VK link, or a direct file link, into the field on the \"Media\" tab and click ⇩. Files are saved to \"Videos\\CutByCut downloads\".</li>\n<li><b>Proxy:</b> for long and 60 fps recordings, a lightweight copy is created in the background for smooth preview (the ⚡ icon on the tile). Export is always made from the original.</li>\n</ul>"
  },
  {
   "id": "timeline",

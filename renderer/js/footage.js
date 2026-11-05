@@ -317,7 +317,9 @@ EFFECTS.push(
   { id: 'starfield', name: 'Звёзды', cat: 'Частицы' },
   { id: 'bubbles', name: 'Пузыри', cat: 'Частицы' },
 );
-function extraEffect(id, cv, ctx, lt, dur, amt, k, gt) {
+// Spotlight: x/y from -1 (left/top) to 1 (right/bottom); auto = wanders around (sx, sy), pan = slides from point 1 to point 2
+const SPOT_DEFAULT = { spotMode: 'auto', sx: 0, sy: 0, sx2: 0.5, sy2: 0, size: 1, soft: 0.73, speed: 1, range: 1 };
+function extraEffect(id, cv, ctx, lt, dur, amt, k, gt, opt) {
   const w = cv.width, hh = cv.height, p = clamp(lt / Math.max(0.01, dur), 0, 1);
   switch (id) {
     case 'earthquake': { const a = 70 * amt * k; drawTransformed(cv, (x) => { x.translate(w / 2 + noise1(lt * 30) * a, hh / 2 + noise1(lt * 30 + 7) * a); x.rotate(noise1(lt * 20 + 3) * 0.05 * amt); x.scale(1.15, 1.15); }); ctx.filter = 'none'; break; }
@@ -338,7 +340,18 @@ function extraEffect(id, cv, ctx, lt, dur, amt, k, gt) {
     case 'nightvision': { const src = copyOf(cv, 5); ctx.clearRect(0, 0, w, hh); ctx.filter = 'grayscale(1) brightness(1.4) contrast(1.3)'; ctx.drawImage(src, 0, 0); ctx.filter = 'none'; ctx.globalCompositeOperation = 'multiply'; ctx.fillStyle = '#3cff5a'; ctx.globalAlpha = amt; ctx.fillRect(0, 0, w, hh); ctx.globalCompositeOperation = 'overlay'; ctx.globalAlpha = 0.4 * amt; ctx.fillStyle = ctx.createPattern(noiseTile(Math.floor(lt * 24)), 'repeat'); ctx.fillRect(0, 0, w, hh); ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; drawVignette(ctx, w, hh, 0.9 * amt); break; }
     case 'duotone': { const src = copyOf(cv, 5); ctx.clearRect(0, 0, w, hh); ctx.filter = 'grayscale(1) contrast(1.2)'; ctx.drawImage(src, 0, 0); ctx.filter = 'none'; ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = amt; ctx.fillStyle = '#ff3c8a'; ctx.fillRect(0, 0, w, hh); ctx.globalCompositeOperation = 'screen'; ctx.fillStyle = '#1e2bff'; ctx.globalAlpha = 0.6 * amt; ctx.fillRect(0, 0, w, hh); break; }
     case 'danger': { const pulse = 0.5 + 0.5 * Math.sin(lt * 7); const g = ctx.createRadialGradient(w / 2, hh / 2, Math.min(w, hh) * 0.25, w / 2, hh / 2, Math.hypot(w, hh) / 2); g.addColorStop(0, 'rgba(255,0,0,0)'); g.addColorStop(1, `rgba(220,0,0,${(0.4 + 0.45 * pulse) * amt})`); ctx.fillStyle = g; ctx.fillRect(0, 0, w, hh); break; }
-    case 'spotlight': { const x = w * (0.5 + 0.3 * Math.sin(lt * 0.8)), y = hh * (0.5 + 0.2 * Math.cos(lt * 0.6)); const g = ctx.createRadialGradient(x, y, Math.min(w, hh) * 0.12, x, y, Math.min(w, hh) * 0.45); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(0,0,0,${0.85 * amt})`); ctx.fillStyle = g; ctx.fillRect(0, 0, w, hh); break; }
+    case 'spotlight': {
+      const o = { ...SPOT_DEFAULT, ...opt };
+      let x, y;
+      if (o.spotMode === 'point') { x = o.sx; y = o.sy; }
+      else if (o.spotMode === 'pan') { const q = easeInOut(p); x = lerp(o.sx, o.sx2, q); y = lerp(o.sy, o.sy2, q); }
+      else { x = o.sx + 0.6 * o.range * Math.sin(lt * 0.8 * o.speed); y = o.sy + 0.4 * o.range * Math.cos(lt * 0.6 * o.speed); }
+      x = w * (0.5 + x / 2); y = hh * (0.5 + y / 2);
+      const R = Math.min(w, hh) * 0.45 * o.size;
+      const g = ctx.createRadialGradient(x, y, R * clamp(1 - o.soft, 0, 0.98), x, y, R);
+      g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(0,0,0,${0.85 * amt})`);
+      ctx.fillStyle = g; ctx.fillRect(0, 0, w, hh); break;
+    }
     case 'sunrays': { ctx.globalCompositeOperation = 'screen'; ctx.translate(w * 0.85, -hh * 0.1); ctx.rotate(Math.sin(lt * 0.3) * 0.05); for (let i = 0; i < 9; i++) { const a = 0.9 + i * 0.12; const g = ctx.createLinearGradient(0, 0, Math.cos(a) * w, Math.sin(a) * w); g.addColorStop(0, `rgba(255,220,150,${0.35 * amt * (0.5 + 0.5 * hash(i))})`); g.addColorStop(1, 'rgba(255,220,150,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(a - 0.03) * w * 1.6, Math.sin(a - 0.03) * w * 1.6); ctx.lineTo(Math.cos(a + 0.03) * w * 1.6, Math.sin(a + 0.03) * w * 1.6); ctx.fill(); } break; }
     case 'lensflare': { ctx.globalCompositeOperation = 'screen'; const fx = w * (0.2 + 0.6 * p), fy = hh * 0.25; const cxp = w / 2, cyp = hh / 2; for (let i = 0; i < 6; i++) { const q = i / 5 * 1.8; const x = fx + (cxp - fx) * q, y = fy + (cyp - fy) * q, r = (i === 0 ? 120 : 20 + 40 * hash(i)) * k; const g = ctx.createRadialGradient(x, y, 0, x, y, r); const col = ['255,240,200', '255,160,80', '120,200,255', '255,120,200', '180,255,180', '255,255,255'][i]; g.addColorStop(0, `rgba(${col},${(i === 0 ? 0.9 : 0.35) * amt})`); g.addColorStop(1, `rgba(${col},0)`); ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2); } break; }
     case 'bokeh': { ctx.globalCompositeOperation = 'screen'; particles(ctx, w, hh, lt, 40, (i, a, b, c) => { const x = (a * w + Math.sin(lt * 0.3 + i) * 40 * k), y = (b * hh + Math.cos(lt * 0.25 + i) * 30 * k), r = (20 + 50 * c) * k; const g = ctx.createRadialGradient(x, y, 0, x, y, r); const col = ['255,200,120', '255,140,180', '160,200,255'][i % 3]; g.addColorStop(0, `rgba(${col},${0.35 * amt})`); g.addColorStop(0.8, `rgba(${col},${0.25 * amt})`); g.addColorStop(1, `rgba(${col},0)`); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }); break; }

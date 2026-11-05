@@ -14,9 +14,12 @@ function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); res
 function change(fn) { pushUndo(); fn(); afterChange(); }
 function afterChange(light) {
   S.ver = (S.ver || 0) + 1;
+  if (S.mode === 'photo') photoNormalize();
   packMain();
+  syncLinked();
   markDirty();
   TL.render();
+  LAYERS.render();
   if (!light) INSP.render(); else INSP.refreshKf();
   requestRender();
   if (curPanel === 'media' || curPanel === 'audio') setPanel(curPanel);
@@ -25,14 +28,29 @@ function markDirty() { S.dirty = true; $('#saveState').textContent = '● не �
 
 // ============ Selection ============
 function selectOnly(id) { S.sel = new Set(id ? [id] : []); onSelChange(); }
+// Captions made for one clip carry link = that clip's id and linkAt = where the clip started.
+// Whenever the clip ends up elsewhere (dragged, magnet track, assistant...) they shift by the same amount.
+function syncLinked() {
+  const byId = new Map(P().clips.map((c) => [c.id, c]));
+  for (const c of P().clips) {
+    if (!c.link) continue;
+    const host = byId.get(c.link);
+    if (!host) { delete c.link; delete c.linkAt; continue; } // the clip was deleted: captions stay where they are
+    const d = host.start - c.linkAt;
+    if (Math.abs(d) > 1e-6) { c.start = Math.max(0, c.start + d); c.linkAt = host.start; }
+  }
+}
 function onSelChange() {
   $$('.clip', $('#tlTracks')).forEach((el) => el.classList.toggle('sel', S.sel.has(el.dataset.clip)));
   INSP.render();
   updateOverlay();
+  LAYERS.render();
   if (curPanel === 'filters') setPanel('filters');
+  if (curPanel === 'captions' && capUi.redraw) capUi.redraw(); // live "selected clips" count
 }
 
 // ============ Media import ============
+async function importAndLayer() { const files = await api.openMedia(); for (const f of files) { const m = await importFile(f); if (m) photoAddImage(m); } }
 async function importDialog() { const files = await api.openMedia(); for (const f of files) await importFile(f); }
 async function importFile(path, name) {
   try {
@@ -104,7 +122,7 @@ async function runProxyQueue() {
 }
 
 function clipFromMedia(m) {
-  const type = m.type === 'audio' ? 'audio' : m.type;
+  const type = m.type === 'audio' || S.mode === 'audio' ? 'audio' : m.type;
   const c = makeClip(type, { mediaId: m.id, name: m.name, dur: m.type === 'image' ? (+SET.imageDur || 4) : m.duration });
   return c;
 }
@@ -116,9 +134,11 @@ function autoRatio(m) {
   if (best.id !== P().ratio) { setRatio(best.id); toast('Формат холста: ' + best.label); }
 }
 function addMediaToTimeline(m) {
+  if (S.mode === 'photo') { photoAddImage(m); return; }
+  if (S.mode === 'audio' && !m.hasAudio) { toast('В этом файле нет звука'); return; }
   change(() => {
     const c = clipFromMedia(m);
-    if (m.type === 'audio') {
+    if (c.type === 'audio') {
       c.start = S.time;
       c.trackId = freeTrack('audio', S.time, c.dur, (P().tracks.find((t) => t.kind === 'audio') || {}).id).id;
     } else {
@@ -218,7 +238,9 @@ async function cmd(name) {
   const sel = [...S.sel].map(clipById).filter(Boolean);
   const one = sel[0];
   switch (name) {
-    case 'new': if (await confirmDiscard()) { S.project = newProject(); S.projectPath = null; undoStack.length = 0; redoStack.length = 0; S.sel.clear(); S.time = 0; loadUI(); S.dirty = false; $('#saveState').textContent = ''; } break;
+    case 'new': case 'hub': if (await confirmDiscard()) HUB.open({ closable: true }); break;
+    case 'uiEditor': UIED.open(); break;
+    case 'projectMenu': projectMenu(); break;
     case 'open': if (await confirmDiscard()) { const p = await api.openProjectDialog(); if (p) await openProjectFile(p); } break;
     case 'save': await saveProject(false); break;
     case 'saveAs': await saveProject(true); break;
@@ -228,7 +250,7 @@ async function cmd(name) {
     case 'help': openGuide(); break;
     case 'settings': openSettings(); break;
     case 'versions': openVersions(); break;
-    case 'play': S.playing ? pause() : play(); break;
+    case 'play': if (S.mode !== 'photo') { S.playing ? pause() : play(); } break;
     case 'prevFrame': seek(S.time - 1 / P().fps); break;
     case 'nextFrame': seek(S.time + 1 / P().fps); break;
     case 'snapshot': { const cv = document.createElement('canvas'); const { W, H } = { W: P().width, H: P().height }; cv.width = W; cv.height = H; renderFrame(cv.getContext('2d'), S.time, W, H); cv.toBlob(async (b) => { const p = await api.snapshot(await b.arrayBuffer(), 'кадр.png'); if (p) toast('Кадр сохранён'); }, 'image/png'); break; }
@@ -302,6 +324,7 @@ async function cmd(name) {
     case 'selectAll': S.sel = new Set(P().clips.map((c) => c.id)); onSelChange(); break;
     case 'shortcuts': showShortcuts(); break;
     case 'ai': setPanel('ai'); break;
+    case 'aiVoice': if (curPanel !== 'ai') setPanel('ai'); aiVoiceToggle(); break;
     case 'sync': openSync(); break;
     case 'silence': change(() => cutSilence(0.05, 0.6, 0.12)); break;
   }
@@ -330,11 +353,11 @@ function showShortcuts() {
 }
 
 // ============ Project files ============
-function serialize() { const p = deep(P()); p.name = $('#projName').textContent.trim() || 'Без названия'; return JSON.stringify({ app: 'sklejka', version: 1, project: p }, null, 1); }
+function serialize() { const p = deep(P()); p.name = $('#projName').textContent.trim() || 'Без названия'; return JSON.stringify({ app: 'cutbycut', version: 1, project: p }, null, 1); }
 async function saveProject(as) {
   P().name = $('#projName').textContent.trim() || 'Без названия';
   let p = S.projectPath;
-  if (!p || as) { const info = await api.info(); p = await api.saveProjectDialog(`${SET.projectsDir || info.docs}\\${P().name}.sklejka`); if (!p) return false; }
+  if (!p || as) { const info = await api.info(); p = await api.saveProjectDialog(`${SET.projectsDir || info.docs}\\${P().name}.cutbycut`); if (!p) return false; }
   await api.writeTextSafe(p, serialize());
   S.projectPath = p; S.dirty = false;
   rememberRecent(p);
@@ -357,7 +380,7 @@ async function openProjectFile(p) {
     for (const m of P().media) { if (!(await api.exists(m.path))) missing.push(m.name); else loadMediaCache(m); }
     loadUI();
     S.dirty = false; $('#saveState').textContent = '';
-    if (missing.length) toast('Не найдены файлы: ' + missing.join(', '), 6000);
+    if (missing.length) toast(`Не найдены файлы (${missing.length}). Укажите папку: «Ещё» → «Найти пропавшие файлы»`, 7000);
   } catch (e) { toast('Не удалось открыть проект: ' + e.message, 5000); }
 }
 async function confirmDiscard() {
@@ -410,6 +433,22 @@ function initOverlay() {
     const d = stageScale();
     const toP = (ev) => ({ x: (ev.clientX - r.left) / d - P().width / 2, y: (ev.clientY - r.top) / d - P().height / 2 });
     const p0 = toP(e);
+    // Alt+click/drag aims the spotlight of the selected clip (Alt+Shift = end point of a pan)
+    if (e.altKey) {
+      const sc = [...S.sel].map(clipById).filter(Boolean)[0];
+      const fx = sc && (sc.type === 'fx' ? (sc.fx.id === 'spotlight' ? sc.fx : null) : (sc.fxList || []).find((f) => f.id === 'spotlight'));
+      if (fx) {
+        e.preventDefault();
+        pushUndo();
+        const end = e.shiftKey && fx.spotMode === 'pan';
+        const aim = (p) => { fx[end ? 'sx2' : 'sx'] = clamp(p.x / (P().width / 2), -1, 1); fx[end ? 'sy2' : 'sy'] = clamp(p.y / (P().height / 2), -1, 1); if (fx.spotMode !== 'pan') fx.spotMode = 'point'; requestRender(); };
+        aim(p0);
+        const mv = (ev) => aim(toP(ev));
+        const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); afterChange(); };
+        window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
+        return;
+      }
+    }
     const handle = e.target.dataset.h;
     let c = [...S.sel].length === 1 ? clipById([...S.sel][0]) : null;
     if (!handle) { c = hitTest(p0.x, p0.y); selectOnly(c ? c.id : null); if (!c) return; }
@@ -460,26 +499,6 @@ function layoutStage() {
   st.style.width = Math.max(10, w) + 'px'; st.style.height = Math.max(10, hh) + 'px';
   requestRender();
 }
-function initResizers() {
-  for (const r of $$('.resizer')) {
-    r.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      const kind = r.dataset.resize;
-      const root = document.documentElement;
-      const x0 = e.clientX, y0 = e.clientY;
-      const L = $('#left').offsetWidth, R = $('#right').offsetWidth, T = $('#timelineArea').offsetHeight;
-      const mv = (ev) => {
-        if (kind === 'left') root.style.setProperty('--left-w', clamp(L + ev.clientX - x0, 240, 700) + 'px');
-        if (kind === 'right') root.style.setProperty('--right-w', clamp(R - (ev.clientX - x0), 240, 600) + 'px');
-        if (kind === 'timeline') root.style.setProperty('--tl-h', clamp(T - (ev.clientY - y0), 160, innerHeight - 300) + 'px');
-        layoutStage();
-      };
-      const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); TL.render(); };
-      window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
-    });
-  }
-}
-
 // ============ Keyboard ============
 function initKeys() {
   window.addEventListener('keydown', (e) => {
@@ -510,6 +529,7 @@ function initKeys() {
       if (ctrl && (k === 'i' || k === 'ш')) return importDialog();
       if (ctrl && (k === 'k' || k === 'л')) return cmd('ai');
       if (ctrl) return 'pass';
+      if (S.mode === 'photo' && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 's', 'ы', 'q', 'й', 'w', 'ц', 'm', 'ь', 'i', 'ш', 'o', 'щ'].includes(k)) return;
       if (k === 'ArrowLeft') return seek(S.time - (e.shiftKey ? 1 : 1 / P().fps));
       if (k === 'ArrowRight') return seek(S.time + (e.shiftKey ? 1 : 1 / P().fps));
       if (k === 'ArrowUp') { const pts = editPoints().filter((p) => p < S.time - 1e-3); return seek(pts.length ? pts[pts.length - 1] : 0); }
@@ -539,6 +559,7 @@ function initKeys() {
 function loadUI() {
   $('#projName').textContent = P().name;
   $('#ratioSel').value = P().ratio;
+  applyMode(P().mode || 'video');
   layoutStage();
   TL.render();
   INSP.render();
@@ -573,13 +594,19 @@ async function boot() {
     const t = overTl ? TL.timeAt(e.clientX) : null;
     for (const f of e.dataTransfer.files) {
       const p = api.pathForFile(f);
-      if (/\.sklejka$/i.test(p)) { if (await confirmDiscard()) await openProjectFile(p); return; }
+      if (/\.(sklejka|cutbycut)$/i.test(p)) { if (await confirmDiscard()) await openProjectFile(p); return; }
+      if (S.mode === 'photo' && !/\.(png|jpe?g|webp|gif|bmp)$/i.test(p)) { toast('В фоторедактор можно добавить только изображения'); continue; }
       const m = await importFile(p);
       if (m && overTl) { const { row } = TL.rowAt(e.clientY); dropAsset({ kind: 'media', id: m.id }, t, row.track); }
+      else if (m && S.mode === 'photo') photoAddImage(m);
     }
   });
   new ResizeObserver(() => layoutStage()).observe($('#stageWrap'));
-  initResizers();
+  $('#modeChip').addEventListener('click', modeMenu);
+  $('#layAddImg').addEventListener('click', importAndLayer);
+  $('#layAddText').addEventListener('click', () => addText({}, 0));
+  initDock();
+  initUiItems();
   initKeys();
   initOverlay();
   TL.init();
@@ -595,8 +622,8 @@ async function boot() {
   if (await api.exists(ap)) {
     try { const j = JSON.parse(await api.readText(ap)); if (j.project && j.project.clips && j.project.clips.length) auto = { path: ap, project: j.project }; } catch (_) {}
   }
-  if (SET.showStart !== false || auto) await showStartScreen(auto);
-  if (!SET.tourDone && !auto && !(SET.recent || []).length) setTimeout(() => startTour(), 600);
+  if (!auto && MODES[SET.startMode]) newProjectIn(SET.startMode);
+  else await HUB.open({ auto });
 }
 window.addEventListener('DOMContentLoaded', boot);
 window.addEventListener('error', (e) => { console.error(e.error || e.message); toast('Ошибка: ' + (e.message || e.error), 4000); });

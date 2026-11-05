@@ -9,10 +9,11 @@ const AI_VISION = `Пользователь работает в позиции �
 - full_01.jpg, full_02.jpg … — раскадровка ВСЕГО итогового видео от начала до конца (под каждым кадром время таймлайна, красная рамка — позиция головки). Открывай их, когда запрос касается всего ролика, начала/конца, другого места («найди, где…», «в момент, когда…»), структуры или сюжета.
 Если нужно больше информации, вместо ops верни запрос (тебе пришлют результат и спросят снова):
 - {"need":"frames","from":сек,"to":сек,"reply":"что ищу"} — подробная раскадровка отрезка (до 24 кадров), чтобы точно найти момент;
-- {"need":"speech","from":сек,"to":сек,"reply":"что ищу"} — расшифровка речи отрезка (можно всё видео: from 0, to длительность).
+- {"need":"loud","from":сек,"to":сек,"track":"имя дорожки"?,"reply":"что ищу"} — моменты резкого громкого звука (время, сила): выстрелы, взрывы, смерти, крики, удары, а на дорожке с музыкой — её биты и акценты. Мгновенно, работает на любой длине — используй его первым для поиска событий по звуку и для синхронизации с музыкой, потом уточняй кадрами через frames;
+- {"need":"speech","from":сек,"to":сек,"reply":"что ищу"} — расшифровка речи отрезка, не больше 10 минут за запрос (это медленно: минуты работы). Только когда действительно важны слова.
 Не угадывай время на глаз по грубой раскадровке, если от этого зависит монтаж, — уточни через frames.`;
 
-const AI_PROTOCOL = `Ты — ИИ-помощник монтажёра внутри видеоредактора «Склейка». Пользователь пишет по-русски, что сделать с проектом.
+const AI_PROTOCOL = `Ты — ИИ-помощник монтажёра внутри видеоредактора «CutByCut». Пользователь пишет по-русски, что сделать с проектом.
 Из инструментов можно использовать только Read — чтобы посмотреть картинки из рабочей папки. Итоговый ответ — ТОЛЬКО один JSON-объект без markdown:
 {"reply":"коротко по-русски, что сделано или ответ на вопрос","ops":[ ...операции по порядку... ]}
 Время — в секундах таймлайна. Клипы указывай по id из состояния проекта. Если просьба неясна — ops пустой, в reply уточняющий вопрос.
@@ -22,14 +23,17 @@ const AI_PROTOCOL = `Ты — ИИ-помощник монтажёра внут�
 {"op":"split","t":сек,"clip":"<id>"?}  — разрезать (без clip — все клипы главной дорожки под t)
 {"op":"delete","clips":["<id>",...]}
 {"op":"deleteRange","from":сек,"to":сек}  — вырезать промежуток с главной дорожки со сдвигом
+{"op":"place","from":сек,"to":сек,"at":сек}  — скопировать кусок таймлайна from–to (картинка вместе со звуком игры) на дорожку наложения так, чтобы он начинался ровно в at. Исходники и главная дорожка не меняются, магнит его не двигает. Так собирай нарезки и подборки под музыку/удары и всё, где важно точное время.
+ВАЖНО: delete и deleteRange — только когда пользователь прямо просит что-то удалить или вырезать. Исходные записи, из которых берёшь моменты, не удаляй.
 {"op":"silence","threshold":0.05,"minGap":0.6,"pad":0.12}  — автоматически вырезать паузы/тишину с главной дорожки (джамп-каты)
 {"op":"move","clip":"<id>","start":сек}
 {"op":"trim","clip":"<id>","start":сек?,"end":сек?}  — новые границы клипа на таймлайне
 {"op":"speed","clip":"<id>","speed":0.1..10}
 {"op":"volume","clip":"<id>","volume":0..4,"fadeIn":сек?,"fadeOut":сек?,"muted":bool?}
 {"op":"filter","clip":"<id>|null","id":"<filterId>","amt":0..1}  — null = слоем на всё видео
+{"op":"mask","clip":"<id>","type":"none|circle|rect|round|heart|star|triangle|diamond|hexagon|band|vband|split|linear|radial","mode":"cut|darken|blur|gray|pixel","size":0.05..3,"feather":0..1,"strength":0..1,"color":"#000000","x":-1..1,"y":-1..1,"rot":-180..180,"aspect":0.2..4,"invert":false}  — маска видео/фото; darken = затемнение снаружи (виньетка: radial+darken, кинополосы: band+darken+feather 0, затемнение снизу: linear+darken+y 0.15), blur/gray/pixel = размыть/обесцветить/пикселизировать снаружи (invert — внутри, например цензура)
 {"op":"adjust","clip":"<id>","brightness":-100..100,"contrast":..,"saturation":..,"exposure":..,"temperature":..,"tint":..,"hue":-180..180,"fade":0..100,"vignette":0..100,"grain":0..100,"blur":0..100}
-{"op":"effect","id":"<effectId>","start":сек,"dur":сек,"amt":0..1,"clip":"<id>"?}  — с clip: эффект на клип, без — на дорожку эффектов
+{"op":"effect","id":"<effectId>","start":сек,"dur":сек,"amt":0..1,"clip":"<id>"?}  — с clip: эффект на клип, без — на дорожку эффектов. Для spotlight (прожектор) можно задать, куда светит: "spotMode":"auto|point|pan","sx":-1..1,"sy":-1..1 (−1 = левый/верхний край), для pan ещё "sx2","sy2" (конечная точка), "size":0.2..3,"soft":0..1,"speed":0..4,"range":0..2
 {"op":"transition","clip":"<id>|all","id":"<transitionId>","dur":сек}  — переход в начало клипа (от предыдущего)
 {"op":"text","text":"...","start":сек,"dur":сек,"style":"<имя стиля>"?,"y":-0.45..0.45?,"x":-0.45..0.45?,"size":px?,"color":"#hex"?,"in":"<animIn>"?,"out":"<animOut>"?,"loop":"<animLoop>"?,"textAnim":"<textAnim>"?}
 {"op":"sticker","emoji":"😂","start":сек,"dur":сек,"x":-0.45..0.45?,"y":?,"scale":1?,"in":?,"loop":?}
@@ -107,11 +111,11 @@ PANELS.ai = function (p) {
     for (const e of ex) w.append(h('span', { class: 'chip', onclick: () => { ta.value = e; ta.focus(); } }, e));
     log.append(w);
   }
-  const ta = h('textarea', { placeholder: 'Например: вырежи паузы, добавь субтитры и эффект тряски на 10-й секунде…', style: { minHeight: '80px' } });
+  const ta = h('textarea', { id: 'aiInput', placeholder: 'Например: вырежи паузы, добавь субтитры и эффект тряски на 10-й секунде… или нажмите 🎙 и скажите голосом', style: { minHeight: '80px' } });
   const model = h('select', {}, h('option', { value: 'claude-sonnet-5-5' }, 'Sonnet 5.5 (быстро)'), h('option', { value: 'claude-opus-5-5' }, 'Opus 5.5 (умнее)'), h('option', { value: 'claude-haiku-5-5' }, 'Haiku 5.5 (самый быстрый)'));
   model.value = AI.model;
   model.addEventListener('change', () => { AI.model = model.value; saveSetting({ aiModel: model.value }); });
-  if (AI.busy) log.append(h('div', { id: 'aiStatus', class: 'note', style: { alignSelf: 'flex-start' } }, AI.status || 'Думаю…'));
+  if (AI.busy) log.append(h('div', { id: 'aiStatus', class: 'aiProg' }));
   const send = h('button', { class: 'primary' }, AI.busy ? 'Думаю…' : 'Отправить');
   send.disabled = AI.busy;
   const go = () => { const t = ta.value.trim(); if (t && !AI.busy) aiSend(t); };
@@ -122,11 +126,19 @@ PANELS.ai = function (p) {
   radius.addEventListener('change', () => { AI.radius = +radius.value; saveSetting({ aiRadius: AI.radius }); ctxLine.textContent = aiCtxText(); });
   const ctxLine = h('span', { id: 'aiCtx', class: 'note', style: { margin: 0 } }, aiCtxText());
   p.append(h('div', { class: 'btnRow', style: { alignItems: 'center', marginBottom: '6px' } }, ctxLine, h('span', { class: 'grow' }), radius));
-  p.append(ta, h('div', { class: 'btnRow', style: { marginTop: '6px', alignItems: 'center' } }, model, h('span', { class: 'grow' }),
+  const vBtn = h('button', { id: 'aiVoiceBtn', title: 'Голосовой ввод: нажмите и говорите, остановится сам, когда замолчите', onclick: () => aiVoiceToggle() }, '🎙');
+  const vSend = h('input', { type: 'checkbox' }); vSend.checked = !!SET.aiVoiceSend;
+  vSend.addEventListener('change', () => saveSetting({ aiVoiceSend: vSend.checked }));
+  p.append(ta, h('div', { id: 'aiVoiceNote', class: 'note', style: { display: 'none', margin: '4px 0 0' } }),
+    h('div', { class: 'btnRow', style: { marginTop: '6px', alignItems: 'center' } }, vBtn, h('label', { class: 'capChk', title: 'Отправлять помощнику сразу после распознавания' }, vSend, 'сразу отправлять')));
+  p.append(h('div', { class: 'btnRow', style: { marginTop: '6px', alignItems: 'center' } }, model, h('span', { class: 'grow' }),
     AI.history.length ? h('button', { onclick: () => { AI.history = []; setPanel('ai'); } }, 'Очистить') : null, send));
   if (AI.available === false) p.append(h('div', { class: 'note', style: { color: '#ff8a7a' } }, 'Claude Code не найден на компьютере. Установите приложение Claude и войдите в аккаунт.'));
   if (AI.needLogin) p.append(h('div', { class: 'btnRow', style: { marginTop: '8px' } },
     h('button', { class: 'primary', onclick: async () => { try { await api.aiLogin(); AI.needLogin = false; setPanel('ai'); } catch (e) { toast(e.message, 5000); } } }, '🔑 Войти заново')));
+  aiDrawProgress();
+  aiVoiceDraw();
+  if (SET.aiVoicePreload && !AI.voiceWarm) { AI.voiceWarm = true; api.voiceWarm(SET.aiVoiceModel).then(() => { AI.voiceReady = true; }, () => { AI.voiceWarm = false; }); }
   setTimeout(() => { log.scrollTop = log.scrollHeight; ta.focus(); }, 0);
   // prepare the whole-video storyboard in the background so the first question is fast
   if (!AI.busy && projectDuration() > 0 && SET.aiOverview !== false) setTimeout(() => { if (!S.exporting) aiOverview().catch(() => {}); }, 300);
@@ -142,7 +154,140 @@ function parseAiJson(text) {
 function aiCtxText() {
   return `📍 Головка ${fmtTime(S.time, P().fps)} · вижу кадр и ${fmtTime(Math.max(0, S.time - AI.radius), P().fps)}–${fmtTime(Math.min(projectDuration(), S.time + AI.radius), P().fps)}`;
 }
-function aiStatus(s) { AI.status = s; const el = $('#aiStatus'); if (el) el.textContent = s; }
+// ---------- Voice input: microphone (with the settings' noise suppression) -> local Whisper -> text box ----------
+// Stops by itself after ~1.5 s of silence once speech was heard (or on the second press, or after a minute).
+async function aiVoiceToggle() {
+  const v = AI.voice;
+  if (v && v.stage === 'rec') { v.stop(); return; }
+  if (v) return; // still recognising
+  let mic;
+  try { mic = await micOpen(); } catch (e) { toast('Нет доступа к микрофону'); return; }
+  // the model loads while the user is speaking
+  if (!AI.voiceWarm) { AI.voiceWarm = true; api.voiceWarm(SET.aiVoiceModel).then(() => { AI.voiceReady = true; }, () => { AI.voiceWarm = false; }); }
+  const chunks = [], rec = new MediaRecorder(mic.stream, { mimeType: 'audio/webm' });
+  const st = AI.voice = { stage: 'rec', t0: performance.now(), level: -100, heard: false, quietSince: 0 };
+  rec.ondataavailable = (e) => chunks.push(e.data);
+  st.stop = () => { if (st.stage !== 'rec') return; st.stage = 'stt'; clearInterval(st.timer); rec.stop(); };
+  rec.onstop = async () => {
+    mic.close();
+    aiVoiceDraw();
+    const dur = (performance.now() - st.t0) / 1000;
+    try {
+      if (!st.heard && dur < 1.2) throw new Error('ничего не услышал');
+      const data = await new Blob(chunks, { type: 'audio/webm' }).arrayBuffer();
+      const text = (await api.voiceTranscribe({ data, model: SET.aiVoiceModel, language: SET.capLang || 'ru', prompt: SET.capHints || '' })).trim();
+      AI.voice = null; AI.voiceReady = true;
+      if (!text) { toast('Речь не распознана — попробуйте ещё раз'); aiVoiceDraw(); return; }
+      const ta = $('#aiInput');
+      const full = ta && ta.value.trim() ? ta.value.trim() + ' ' + text : text;
+      if (SET.aiVoiceSend && !AI.busy) { if (ta) ta.value = ''; aiSend(full); return; }
+      if (ta) { ta.value = full; ta.focus(); ta.setSelectionRange(full.length, full.length); }
+      aiVoiceDraw();
+    } catch (e) {
+      AI.voice = null; aiVoiceDraw();
+      toast('Голосовой ввод: ' + e.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, ''), 5000);
+    }
+  };
+  rec.start();
+  st.timer = setInterval(() => {
+    const lv = mic.level(), now = performance.now();
+    st.level = lv.peak;
+    if (lv.rms > -42) { st.heard = true; st.quietSince = 0; }
+    else if (st.heard && SET.aiVoiceAuto !== false) { st.quietSince = st.quietSince || now; if (now - st.quietSince > 1500) st.stop(); }
+    if (now - st.t0 > 60000) st.stop();
+    aiVoiceDraw();
+  }, 80);
+  aiVoiceDraw();
+}
+function aiVoiceDraw() {
+  const b = $('#aiVoiceBtn'), n = $('#aiVoiceNote'), v = AI.voice;
+  if (!b || !n) return;
+  b.classList.toggle('recording', !!v && v.stage === 'rec');
+  b.disabled = !!v && v.stage === 'stt';
+  if (!v) { b.textContent = '🎙'; n.style.display = 'none'; return; }
+  n.style.display = '';
+  if (v.stage === 'rec') {
+    const s = (performance.now() - v.t0) / 1000;
+    b.textContent = `⏹ ${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+    const w = (clamp((v.level + 60) / 60, 0, 1) * 100).toFixed(0);
+    n.textContent = '';
+    n.append(h('span', { class: 'aiVoiceLvl' }, h('i', { style: { width: w + '%' } })), v.heard ? 'Слушаю… остановлю сам, когда замолчите' : 'Говорите…');
+  } else n.textContent = 'Распознаю речь…' + (AI.voiceReady ? '' : ' (первый раз загружается модель — это может занять до минуты)');
+}
+
+// ---------- Live progress in the chat: finished steps, current step with a bar, timers ----------
+const aiDur = (s) => { s = Math.max(0, Math.round(s)); return s >= 60 ? `${Math.floor(s / 60)} мин ${s % 60} с` : `${s} с`; };
+const aiClock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+// A new text starts a new step (the previous one goes to the log); pct (0..1) and detail refine the current one
+function aiStatus(s, pct = null, detail = '') {
+  const now = performance.now();
+  if (s !== AI.status) {
+    if (AI.status) AI.steps.push({ text: AI.status, sec: (now - AI.stepT0) / 1000 }, ...AI.notes);
+    AI.status = s; AI.stepT0 = now; AI.eta = null; AI.notes = [];
+  }
+  AI.pct = pct; AI.detail = detail;
+  aiDrawProgress();
+}
+// sub-steps (which picture Claude opened, how many phrases were heard) sit under the current step
+// Stop at any stage: Claude, speech recognition (ffmpeg + Whisper) and the remaining rounds
+function aiStop() {
+  if (!AI.busy || AI.stopping) return;
+  AI.stopping = true;
+  aiDrawProgress();
+  api.aiCancel().catch(() => {});
+  api.whisperCancel().catch(() => {});
+}
+function aiNote(text) { AI.notes.push({ text, note: true }); aiDrawProgress(); }
+function aiDrawProgress() {
+  const el = $('#aiStatus');
+  if (!el || !AI.busy) return;
+  const now = performance.now();
+  const log = el.parentElement, stick = log && log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+  el.textContent = '';
+  for (const st of AI.steps.slice(-12)) el.append(h('div', { class: 'aiStep' + (st.note ? ' note2' : '') }, st.note ? st.text : `✓ ${st.text}`, st.note ? null : h('span', { class: 'aiT' }, aiDur(st.sec))));
+  el.append(h('div', { class: 'aiCur' }, h('span', { class: 'aiSpin' }), AI.status || 'Думаю…', h('span', { class: 'aiT' }, aiDur((now - AI.stepT0) / 1000))));
+  if (AI.pct != null) el.append(h('div', { class: 'aiBar' }, h('i', { style: { width: (clamp(AI.pct, 0, 1) * 100).toFixed(1) + '%' } })));
+  for (const st of AI.notes.slice(-6)) el.append(h('div', { class: 'aiStep note2' }, st.text));
+  const sub = [AI.pct != null ? Math.floor(clamp(AI.pct, 0, 1) * 100) + '%' : '', AI.detail, AI.eta != null ? `осталось ≈ ${aiDur(AI.eta)}` : ''].filter(Boolean).join(' · ');
+  if (sub) el.append(h('div', { class: 'aiSub' }, sub));
+  el.append(h('div', { class: 'aiSub', style: { display: 'flex', alignItems: 'center' } }, h('span', { style: { flex: 1 } }, `Всего: ${aiDur((now - AI.t0) / 1000)}`),
+    h('button', { class: 'aiStop', onclick: aiStop, disabled: AI.stopping }, AI.stopping ? 'Останавливаю…' : '⏹ Остановить')));
+  if (stick) log.scrollTop = log.scrollHeight;
+}
+const aiFileName = (f) => {
+  let m;
+  if (f === 'now.jpg') return 'кадр под головкой';
+  if (f === 'window.jpg') return `раскадровку ±${AI.radius} с вокруг головки`;
+  if ((m = /^full_(\d+)/.exec(f))) return `раскадровку всего видео, часть ${+m[1]}${AI.ov ? ' из ' + AI.ov.files.length : ''}`;
+  if (/^detail_/.test(f)) return 'подробную раскадровку';
+  return f;
+};
+api.onAiProgress((p) => {
+  if (!AI.busy) return;
+  if (p.kind === 'read') { aiNote(`👁 Смотрит ${aiFileName(p.file)}`); }
+  else if (p.kind === 'text') { const t = p.text.replace(/\s+/g, ' '); if (!/^\s*[{`]/.test(t)) aiStatus(AI.status, null, '💭 ' + (t.length > 160 ? t.slice(0, 160) + '…' : t)); }
+  else if (p.kind === 'thinking') aiStatus(AI.status, null, '💭 размышляет…');
+});
+// Whisper: preparing the sound, loading the model, then how far it has listened
+api.onWhisperProgress((p) => {
+  if (!AI.busy || !AI.listening) return;
+  const L = AI.listening;
+  if (p.stage === 'mix') aiStatus(AI.status, 0.1 * (p.total ? p.done / p.total : 0), (p.text || `готовлю звук: ${p.done} из ${p.total}`).replace(/^Сведение звука:/, 'готовлю звук:'));
+  else if (p.stage === 'lanes') aiStatus(AI.status, 0.1, (p.text || 'свожу дорожки').toLowerCase());
+  else if (p.stage === 'download') aiStatus(AI.status, 0.1, `скачиваю модель распознавания: ${p.pct}%`);
+  else if (p.stage === 'model') { aiStatus(AI.status, 0.1, 'загружаю модель распознавания'); L.listenT0 = null; }
+  else if (p.stage === 'listen') {
+    const now = performance.now();
+    if (L.listenT0 == null) L.listenT0 = now;
+    const frac = clamp(p.at / Math.max(0.1, p.duration), 0, 1);
+    const spent = (now - L.listenT0) / 1000;
+    AI.listenEta = frac > 0.02 && spent > 3 ? spent * (1 - frac) / frac : null;
+    const said = p.text ? ` · «${p.text.length > 90 ? p.text.slice(0, 90) + '…' : p.text}»` : '';
+    aiStatus(AI.status, 0.1 + 0.9 * frac, `прослушано ${aiClock(p.at)} из ${aiClock(p.duration)} (до ${aiClock(L.a + p.at)} на таймлайне)${said}`);
+    AI.eta = AI.listenEta;
+    aiDrawProgress();
+  }
+});
 
 // ---------- What the assistant sees: frame under the playhead + storyboard around it ----------
 const even2 = (v) => Math.max(2, Math.round(v / 2) * 2);
@@ -232,7 +377,8 @@ function aiSignature() {
 async function aiOverview(onProgress) {
   const sig = aiSignature();
   if (AI.ov && AI.ov.sig === sig && (await api.aiHasFiles(AI.ov.files))) return AI.ov;
-  if (AI.ovBuilding && AI.ovBuilding.sig === sig) return AI.ovBuilding.promise;
+  // already being built in the background: report its progress to the new caller
+  if (AI.ovBuilding && AI.ovBuilding.sig === sig) { if (onProgress) AI.ovBuilding.cb = onProgress; return AI.ovBuilding.promise; }
   const build = (async () => {
     const dur = projectDuration();
     if (!dur) return null;
@@ -244,7 +390,7 @@ async function aiOverview(onProgress) {
     const land = P().width >= P().height;
     for (let i = 0; i < times.length; i += PER) {
       const chunk = times.slice(i, i + PER);
-      const sheet = await makeSheet(chunk, { cw: land ? 320 : 150, cols: land ? 6 : 8, label: (t) => fmtS(t), progress: (k) => onProgress && onProgress(i + k, times.length) });
+      const sheet = await makeSheet(chunk, { cw: land ? 320 : 150, cols: land ? 6 : 8, label: (t) => fmtS(t), progress: (k) => { const cb = (AI.ovBuilding && AI.ovBuilding.cb) || onProgress; if (cb) cb(i + k, times.length); } });
       const name = `full_${String(files.length + 1).padStart(2, '0')}.jpg`;
       await api.aiSaveFile(name, await toJpeg(sheet));
       files.push(name);
@@ -256,6 +402,48 @@ async function aiOverview(onProgress) {
   try { AI.ov = await build; return AI.ov; } finally { AI.ovBuilding = null; }
 }
 
+
+// ---------- Sudden loud moments (from the waveform peaks already computed for the timeline) ----------
+// Cheap way to find shots, deaths, hits, screams, beats of a song: onset strength of the audio envelope.
+function aiLoud(a, b, trackName) {
+  const dur = projectDuration();
+  a = clamp(a, 0, dur); b = clamp(b, a + 0.5, dur);
+  const n = Math.ceil((b - a) * 100), env = new Float32Array(n), who = new Array(n);
+  const tr = trackName ? P().tracks.find((t) => t.name.toLowerCase() === String(trackName).toLowerCase()) : null;
+  for (const c of P().clips) {
+    if ((c.type !== 'video' && c.type !== 'audio') || c.muted || c.volume <= 0) continue;
+    if (tr && c.trackId !== tr.id) continue;
+    const t0 = (trackById(c.trackId) || {}); if (t0.muted) continue;
+    const pk = (S.cache[c.mediaId] || {}).peaks;
+    if (!pk) continue;
+    const s = Math.max(a, c.start), e = Math.min(b, c.start + c.dur);
+    for (let t = s; t < e; t += 0.01) {
+      const i = Math.floor((t - a) * 100), src = Math.floor((c.in + (t - c.start) * c.speed) * 100);
+      const v = ((pk[src] || 0) / 255) * Math.min(1.5, c.volume);
+      if (i >= 0 && i < n && v > env[i]) { env[i] = v; who[i] = c; }
+    }
+  }
+  const flux = new Float32Array(n);
+  for (let i = 1; i < n; i++) flux[i] = Math.max(0, env[i] - env[i - 1]);
+  const hits = [];
+  let sum = 0; const W = 150; // 1.5 s moving mean on each side
+  for (let i = 0; i < Math.min(n, W); i++) sum += flux[i];
+  for (let i = 1; i < n - 1; i++) {
+    const lo = i - W - 1, hi = i + W;
+    if (hi < n) sum += flux[hi];
+    if (lo >= 0) sum -= flux[lo];
+    const mean = sum / (Math.min(n, hi + 1) - Math.max(0, lo + 1));
+    if (flux[i] > mean * 3 + 0.05 && flux[i] >= flux[i - 1] && flux[i] >= flux[i + 1]) hits.push({ t: a + i / 100, s: flux[i] / (mean + 0.01), lvl: env[i], c: who[i] });
+  }
+  // keep the strongest, at least 0.25 s apart, then list by time
+  hits.sort((x, y) => y.s - x.s);
+  const keep = [];
+  for (const hh of hits) { if (keep.length >= 80) break; if (keep.every((k) => Math.abs(k.t - hh.t) > 0.25)) keep.push(hh); }
+  if (!keep.length) return 'Резких звуков не найдено (или волна этих клипов ещё не готова).';
+  keep.sort((x, y) => x.t - y.t);
+  return keep.map((k) => `${k.t.toFixed(2)} с — сила ${k.s.toFixed(1)}, громкость ${(k.lvl * 100).toFixed(0)}%${k.c ? ' (' + clipName(k.c) + ')' : ''}`).join('\n');
+}
+
 // ---------- Speech of any range (cached per timeline state) ----------
 async function aiSpeech(a, b) {
   const key = aiSignature().length + ':' + a.toFixed(1) + '-' + b.toFixed(1);
@@ -265,19 +453,19 @@ async function aiSpeech(a, b) {
   let res;
   if (!items.length) res = 'В этом диапазоне нет звука.';
   else {
-    const segs = await api.whisper({ audio: items, duration: b - a, language: 'auto', model: 'base' });
+    const segs = await api.whisper({ audio: items, duration: b - a, language: 'auto', model: 'base', prompt: SET.capHints || '' });
     res = segs.length ? segs.map((s) => `[${(s.start + a).toFixed(1)}–${(s.end + a).toFixed(1)} с] ${s.text}`).join('\n') : 'Речь не распознана (тишина, музыка или шум).';
   }
   AI.speechCache.set(key, res);
   return res;
 }
-async function aiDetail(a, b, n) {
+async function aiDetail(a, b, n, onProgress) {
   const dur = projectDuration();
   a = clamp(a, 0, dur); b = clamp(b, a + 0.1, dur);
   const count = clamp(Math.round((b - a) / 0.25), 2, 24);
   const times = [];
   for (let i = 0; i < count; i++) times.push(Math.min(a + ((b - a) * i) / (count - 1), dur - 0.04));
-  const sheet = await makeSheet(times, { label: (t) => fmtS(t) });
+  const sheet = await makeSheet(times, { label: (t) => fmtS(t), progress: onProgress });
   const name = `detail_${n}.jpg`;
   await api.aiSaveFile(name, await toJpeg(sheet));
   requestRender();
@@ -288,22 +476,31 @@ async function aiSend(text) {
   AI.history.push({ role: 'user', text });
   if (S.playing) pause(); // "здесь" must stay where the user stopped
   AI.busy = true;
-  AI.status = `Смотрю кадр и ±${AI.radius} с вокруг головки…`;
+  AI.stopping = false;
+  AI.steps = []; AI.notes = []; AI.t0 = AI.stepT0 = performance.now(); AI.pct = null; AI.detail = ''; AI.eta = null; AI.listening = null;
+  AI.status = `Смотрю кадр и ±${AI.radius} с вокруг головки`;
+  const tick = setInterval(aiDrawProgress, 1000);
   setPanel('ai');
   const hist = AI.history.slice(-8, -1).map((m) => `${m.role === 'user' ? 'Пользователь' : 'Помощник'}: ${m.text}`).join('\n');
   let reply;
   try {
     let vis = null, ov = null;
     try { vis = await aiCaptureContext(); } catch (e) { console.warn('ai capture', e); }
-    if (SET.aiOverview !== false) try { ov = await aiOverview((i, n) => aiStatus(`Просматриваю всё видео: кадр ${i + 1} из ${n}…`)); } catch (e) { console.warn('ai overview', e); }
+    if (SET.aiOverview !== false) try {
+      const cached = AI.ov && AI.ov.sig === aiSignature();
+      if (!cached) aiStatus('Просматриваю всё видео');
+      ov = await aiOverview((i, n) => aiStatus('Просматриваю всё видео', (i + 1) / n, `кадр ${i + 1} из ${n}`));
+      if (cached) aiNote('Раскадровка всего видео уже готова');
+    } catch (e) { console.warn('ai overview', e); }
     let visText = vis ? `${AI_VISION}\nГоловка стоит на ${S.time.toFixed(1)} с. Раскадровка window.jpg охватывает ${vis.from.toFixed(1)}–${vis.to.toFixed(1)} с.` : '';
     if (ov) visText += `\nРаскадровка всего видео (${ov.dur.toFixed(1)} с): ${ov.files.join(', ')} — ${ov.count} кадров, примерно каждые ${ov.step.toFixed(1)} с.`;
     const base = `${AI_PROTOCOL}\n\n${visText}\n\nКаталоги:\n${aiCatalog()}\n\nСостояние проекта:\n${aiState()}\n\n${hist ? 'Предыдущий диалог:\n' + hist + '\n\n' : ''}Запрос пользователя: ${text}`;
     const extra = [];
-    const ROUNDS = 4;
+    const ROUNDS = 6;
     let j;
     for (let round = 0; round < ROUNDS; round++) {
-      aiStatus(round ? 'Думаю над деталями…' : 'Думаю…');
+      if (AI.stopping) throw new Error('остановлено');
+      aiStatus(round ? `Claude думает над деталями (раунд ${round + 1} из ${ROUNDS})` : 'Claude думает над запросом');
       const tail = extra.length ? `\n\nДополнительная информация по твоим запросам:\n${extra.join('\n\n')}\n\n${round === ROUNDS - 1 ? 'Теперь выполни запрос. Поле need больше не используй.' : `Если нужно — можешь запросить ещё (осталось запросов: ${ROUNDS - 1 - round}).`}` : '';
       const raw = await api.aiAsk({ prompt: base + tail, model: AI.model });
       try { j = parseAiJson(raw); } catch (_) { j = { reply: raw, ops: [] }; }
@@ -311,15 +508,30 @@ async function aiSend(text) {
       const dur = projectDuration();
       const a = clamp(nfin(j.from, vis ? vis.from : 0), 0, dur), b = clamp(nfin(j.to, vis ? vis.to + 2 : dur), 0, dur);
       if (j.need === 'frames') {
-        aiStatus(`Разглядываю ${fmtTime(a, P().fps)}–${fmtTime(b, P().fps)}…`);
-        const d = await aiDetail(a, b, round + 1);
+        aiStatus(`Разглядываю ${fmtTime(a, P().fps)}–${fmtTime(b, P().fps)} покадрово`);
+        const d = await aiDetail(a, b, round + 1, (i, n) => aiStatus(AI.status, (i + 1) / n, `кадр ${i + 1} из ${n}`));
         extra.push(`Подробная раскадровка ${a.toFixed(1)}–${b.toFixed(1)} с: файл ${d.name} (кадры каждые ${d.step.toFixed(2)} с, подписано время).`);
+      } else if (j.need === 'loud') {
+        aiStatus(`Ищу резкие звуки ${fmtTime(a, P().fps)}–${fmtTime(b, P().fps)}`);
+        const res = aiLoud(a, b, j.track);
+        aiNote(`🔊 Найдено моментов: ${res.startsWith('Резких') ? 0 : res.split('\n').length}`);
+        extra.push(`Резкие звуки ${a.toFixed(1)}–${b.toFixed(1)} с${j.track ? ' (дорожка ' + j.track + ')' : ''}, время таймлайна:\n${res}`);
       } else if (j.need === 'speech') {
-        aiStatus(`Слушаю речь ${fmtTime(a, P().fps)}–${fmtTime(b, P().fps)}${b - a > 120 ? ' (длинный отрезок — это займёт время)' : ''}…`);
-        extra.push(`Расшифровка речи ${a.toFixed(1)}–${b.toFixed(1)} с (время таймлайна):\n${await aiSpeech(a, b)}`);
+        const capped = b - a > 600;
+        const b2 = capped ? a + 600 : b;
+        aiStatus(`Слушаю речь ${fmtTime(a, P().fps)}–${fmtTime(b2, P().fps)}`, 0, 'подготовка');
+        AI.listening = { a, b: b2 };
+        let said;
+        try { said = await aiSpeech(a, b2); } finally { AI.listening = null; }
+        if (capped) said += `\n(Прослушаны только первые 10 минут запрошенного отрезка ${a.toFixed(0)}–${b.toFixed(0)} с. Для поиска событий используй loud.)`;
+        const lines = said.split('\n').filter((l) => l.startsWith('[')).length;
+        aiNote(lines ? `🎧 Распознано фраз: ${lines}` : `🎧 ${said}`);
+        extra.push(`Расшифровка речи ${a.toFixed(1)}–${b2.toFixed(1)} с (время таймлайна):\n${said}`);
       } else break;
     }
+    if (AI.stopping) throw new Error('остановлено');
     const ops = Array.isArray(j.ops) ? j.ops : [];
+    if (ops.length) aiStatus(`Применяю изменения: ${ops.length} шт.`);
     const res = ops.length ? await runOps(ops) : { done: 0, errors: [] };
     reply = (j.reply || 'Готово.') + (res.errors.length ? `\n\n⚠ Не выполнено: ${res.errors.join('; ')}` : '');
   } catch (e) {
@@ -327,9 +539,11 @@ async function aiSend(text) {
     if (/OAuth|authenticat|login|401|session expired/i.test(msg)) {
       AI.needLogin = true;
       reply = 'Вход в Claude истёк — помощнику нужно войти заново. Нажмите «Войти заново» ниже, в открывшемся окне наберите /login и войдите в браузере, затем повторите запрос.';
-    } else reply = 'Ошибка: ' + msg;
+    } else if (AI.stopping) reply = '⏹ Остановлено. Ничего не изменено.';
+    else reply = 'Ошибка: ' + msg;
   }
-  AI.busy = false; AI.status = '';
+  clearInterval(tick);
+  AI.busy = false; AI.status = ''; AI.listening = null; AI.stopping = false;
   AI.history.push({ role: 'assistant', text: reply });
   if (curPanel === 'ai') setPanel('ai'); else toast('✨ ' + reply.slice(0, 120), 5000);
 }
@@ -364,6 +578,25 @@ function execOp(o) {
       pr.clips.push(c);
       return;
     }
+    case 'place': {
+      const from = nfin(o.from, NaN), to = nfin(o.to, NaN), at = Math.max(0, nfin(o.at, S.time));
+      if (!(to > from)) throw new Error('place: нужен отрезок from < to');
+      const main = pr.tracks.find((t) => t.main);
+      const vis = (c) => (c.type === 'video' || c.type === 'image') && c.start < to && c.start + c.dur > from;
+      let src = pr.clips.filter((c) => c.trackId === main.id && vis(c));
+      if (!src.length) src = pr.clips.filter((c) => vis(c) && KIND_OF[c.type] === 'video');
+      if (!src.length) throw new Error(`place: на ${from.toFixed(1)}–${to.toFixed(1)} с нет видео`);
+      const tr = freeTrack('video', at, to - from).id;
+      for (const c of src) {
+        const s = Math.max(from, c.start), e = Math.min(to, c.start + c.dur);
+        const n = cloneClip(c);
+        n.start = at + (s - from); n.dur = e - s; n.trackId = tr;
+        if (n.in != null && n.freeze == null) n.in = c.in + (s - c.start) * c.speed;
+        delete n.trans; delete n.link; delete n.linkAt;
+        pr.clips.push(n);
+      }
+      return;
+    }
     case 'split': {
       const list = o.clip ? [needClip(o.clip)] : clipsOn(pr.tracks.find((t) => t.main).id).filter((c) => activeAt(c, o.t));
       for (const c of list) splitClip(c, o.t);
@@ -391,13 +624,24 @@ function execOp(o) {
       pr.clips.push(makeClip('filter', { start: 0, dur: projectDuration() || 5, trackId: tr.id, filter: { id: o.id, amt: nfin(o.amt, 1) } }));
       return;
     }
+    case 'mask': {
+      const c = needClip(o.clip);
+      if (!c.mask) throw new Error('маска только для видео и фото');
+      if (o.type && !MASK_SHAPES.find((m) => m.id === o.type)) throw new Error('нет маски ' + o.type);
+      if (o.mode && !MASK_MODES.find(([id]) => id === o.mode)) throw new Error('нет режима маски ' + o.mode);
+      c.mask = { ...MASK_DEFAULT, ...c.mask };
+      for (const k of Object.keys(MASK_DEFAULT)) if (o[k] != null) c.mask[k] = o[k];
+      return;
+    }
     case 'adjust': { const c = needClip(o.clip); if (!c.adj) throw new Error('клип не поддерживает коррекцию'); for (const k of Object.keys(ADJUST_DEFAULT)) if (o[k] != null) c.adj[k] = o[k]; return; }
     case 'effect': {
       if (!EFFECTS.find((f) => f.id === o.id)) throw new Error('нет эффекта ' + o.id);
-      if (o.clip) { const c = needClip(o.clip); c.fxList = c.fxList || []; c.fxList.push({ id: o.id, amt: nfin(o.amt, 0.6) }); return; }
+      const fx = { id: o.id, amt: nfin(o.amt, 0.6) };
+      if (o.id === 'spotlight') for (const k of Object.keys(SPOT_DEFAULT)) if (o[k] != null) fx[k] = o[k];
+      if (o.clip) { const c = needClip(o.clip); c.fxList = c.fxList || []; c.fxList.push(fx); return; }
       const st = nfin(o.start, S.time), dur = nfin(o.dur, 3);
       const tr = freeTrack('fx', st, dur, (pr.tracks.find((x) => x.kind === 'fx') || {}).id);
-      const c = makeClip('fx', { start: st, dur, trackId: tr.id }); c.fx = { id: o.id, amt: nfin(o.amt, 0.6) }; pr.clips.push(c);
+      const c = makeClip('fx', { start: st, dur, trackId: tr.id }); c.fx = fx; pr.clips.push(c);
       return;
     }
     case 'transition': {
